@@ -20,7 +20,8 @@ for e, loss, acc in history:
     md += f'| {e:5d} | {loss:.4f} | {acc:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
-print('Saved training_log.md')
+print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
+print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_REG = """
@@ -36,7 +37,8 @@ for e, loss in history:
     md += f'| {e:5d} | {loss:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
-print('Saved training_log.md')
+print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
+print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_AE = """
@@ -52,7 +54,8 @@ for e, loss in history:
     md += f'| {e:5d} | {loss:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
-print('Saved training_log.md')
+print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
+print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_GAN = """
@@ -68,7 +71,8 @@ for e, dl, gl in history:
     md += f'| {e:5d} | {dl:.4f} | {gl:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
-print('Saved training_log.md')
+print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
+print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_MT = """
@@ -84,7 +88,8 @@ for e, loss, a1, a2 in history:
     md += f'| {e:5d} | {loss:.4f} | {a1:.4f} | {a2:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
-print('Saved training_log.md')
+print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
+print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 
@@ -98,10 +103,12 @@ def get_templates(model_type):
                 "        elif c>=4:\n            self.y=np.fmin(((self.X[:,0]*self.X[:,1]>0).astype(int)+(self.X[:,2]+self.X[:,3]>0).astype(int)),OUTPUT_DIM-1)\n"
                 "        else:\n            self.y=np.fmin((self.X[:,0]*self.X[:,1]>0).astype(int),OUTPUT_DIM-1)\n"
                 "    def __len__(self):return len(self.X)\n    def __getitem__(self,i):return torch.from_numpy(self.X[i]),self.y[i]\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "criterion = {'ce': lambda: nn.CrossEntropyLoss(),'ce_smooth': lambda: nn.CrossEntropyLoss(label_smoothing=0.1)}.get(LOSS_TYPE, nn.CrossEntropyLoss)()\n"
                  "history=[]\n"
@@ -113,6 +120,8 @@ def get_templates(model_type):
                  "        acc=correct/len(ds)\n"
                  "    history.append((e,loss_val,acc))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}, acc={acc:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_CLS)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -132,10 +141,12 @@ def get_templates(model_type):
                 "        true_w=np.random.randn(INPUT_DIM,OUTPUT_DIM).astype(np.float32)\n"
                 "        self.y=(self.X@true_w+np.random.randn(n,OUTPUT_DIM).astype(np.float32)*0.5)\n"
                 "    def __len__(self):return len(self.X)\n    def __getitem__(self,i):return torch.from_numpy(self.X[i]),torch.from_numpy(self.y[i])\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "_losses = {'mse': nn.MSELoss, 'l1': nn.L1Loss, 'smooth_l1': nn.SmoothL1Loss}\n"
                  "criterion = _losses.get(LOSS_TYPE, nn.MSELoss)()\n"
@@ -146,6 +157,8 @@ def get_templates(model_type):
                  "        loss_val=sum(criterion(m(x),y).item()*x.size(0) for x,y in lo)/len(ds)\n"
                  "    history.append((e,loss_val))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_REG)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -170,10 +183,12 @@ def get_templates(model_type):
                 "            self.y.append(k%OUTPUT_DIM)\n"
                 "        self.X=np.array(self.X,dtype=np.float32)\n        self.y=np.array(self.y,dtype=np.int64)\n"
                 "    def __len__(self):return len(self.X)\n    def __getitem__(self,i):return torch.from_numpy(self.X[i]),self.y[i]\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "criterion={'ce':lambda:nn.CrossEntropyLoss(),'ce_smooth':lambda:nn.CrossEntropyLoss(label_smoothing=0.1)}.get(LOSS_TYPE,nn.CrossEntropyLoss)()\n"
                  "history=[]\n"
@@ -185,6 +200,8 @@ def get_templates(model_type):
                  "        acc=correct/len(ds)\n"
                  "    history.append((e,loss_val,acc))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}, acc={acc:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_CLS)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -205,10 +222,12 @@ def get_templates(model_type):
                 "            self.y.append(int((w[-1]+1)*(OUTPUT_DIM-1)/2))\n"
                 "        self.X=np.array(self.X,dtype=np.float32)\n        self.y=np.array(self.y,dtype=np.int64)\n"
                 "    def __len__(self):return len(self.X)\n    def __getitem__(self,i):return torch.from_numpy(self.X[i]),self.y[i]\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "criterion=nn.CrossEntropyLoss()\n"
                  "history=[]\n"
@@ -220,6 +239,8 @@ def get_templates(model_type):
                  "        acc=correct/len(ds)\n"
                  "    history.append((e,loss_val,acc))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}, acc={acc:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_CLS)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -234,10 +255,12 @@ def get_templates(model_type):
                 "        self.X=np.random.randn(n,INPUT_DIM).astype(np.float32)\n"
                 "    def __len__(self):return len(self.X)\n    def __getitem__(self,i):return torch.from_numpy(self.X[i])\n")
         if model_type == 'ae':
-            train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+            train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                      "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                      "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                      "print(f'Model: {total_params} parameters')\n"
+                     "os.makedirs('checkpoints',exist_ok=True)\n"
+                     "best_loss=float('inf')\n"
                      "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                      "history=[]\n"
                      "for e in range(EPOCHS):\n"
@@ -246,13 +269,17 @@ def get_templates(model_type):
                      "        recon_loss=sum(nn.MSELoss()(m(x)[0],x).item()*x.size(0) for x in lo)/len(ds)\n"
                      "    history.append((e,recon_loss))\n"
                      "    print(f'Epoch {e:3d}: recon_loss={recon_loss:.4f}')\n"
+                     "    if recon_loss<best_loss:\n        best_loss=recon_loss\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                     "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                      "torch.save(m.state_dict(),'model.pth')\n"
                      + _FOOTER_AE)
         else:
-            train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+            train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                      "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                      "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                      "print(f'Model: {total_params} parameters')\n"
+                     "os.makedirs('checkpoints',exist_ok=True)\n"
+                     "best_loss=float('inf')\n"
                      "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                      "history=[]\n"
                      "for e in range(EPOCHS):\n"
@@ -264,6 +291,8 @@ def get_templates(model_type):
                      "        recon_loss=sum(nn.functional.mse_loss(m(x)[0],x).item()*x.size(0) for x in lo)/len(ds)\n"
                      "    history.append((e,recon_loss))\n"
                      "    print(f'Epoch {e:3d}: recon_loss={recon_loss:.4f}')\n"
+                     "    if recon_loss<best_loss:\n        best_loss=recon_loss\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                     "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                      "torch.save(m.state_dict(),'model.pth')\n"
                      + _FOOTER_AE)
         if model_type == 'ae':
@@ -294,10 +323,12 @@ def get_templates(model_type):
                 "            self.y2=np.fmin((X[:,0]+X[:,1]>0).astype(int),2)\n"
                 "    def __len__(self):return len(self.X)\n"
                 "    def __getitem__(self,i):return torch.from_numpy(self.X[i]),self.y1[i],self.y2[i]\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "history=[]\n"
                  "for e in range(EPOCHS):\n"
@@ -316,6 +347,8 @@ def get_templates(model_type):
                  "        loss_val/=n;a1=a1s/n;a2=a2s/n\n"
                  "    history.append((e,loss_val,a1,a2))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}, acc1={a1:.4f}, acc2={a2:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_MT)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -330,7 +363,7 @@ def get_templates(model_type):
                 "        theta=torch.randn(n,1)*2*np.pi\n        r=2.0\n"
                 "        self.X=torch.cat([r*torch.cos(theta),r*torch.sin(theta)],dim=1).numpy().astype(np.float32)\n"
                 "    def __len__(self):return len(self.X)\n    def __getitem__(self,i):return torch.from_numpy(self.X[i])\n")
-        train = ("import torch,torch.nn as nn,numpy as np\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os,numpy as np\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
@@ -355,6 +388,8 @@ def get_templates(model_type):
                  "    dl=dls/n;gl=gls/n\n"
                  "    history.append((e,dl,gl))\n"
                  "    print(f'Epoch {e:3d}: d_loss={dl:.4f}, g_loss={gl:.4f}')\n"
+                 "    if gl<best_loss:\n        best_loss=gl\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_GAN)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -370,10 +405,12 @@ def get_templates(model_type):
                 "    def __len__(self):return len(self.X)\n"
                 "    def __getitem__(self,i):\n        x=torch.from_numpy(self.X[i])\n"
                 "        return x+torch.randn_like(x)*0.05,x+torch.randn_like(x)*0.05\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "history=[]\n"
                  "for e in range(EPOCHS):\n"
@@ -393,6 +430,8 @@ def get_templates(model_type):
                  "    loss_val=epoch_loss/n\n"
                  "    history.append((e,loss_val))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_REG)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -415,10 +454,12 @@ def get_templates(model_type):
                 "                self.labels.append(0)\n"
                 "    def __len__(self):return len(self.pairs)\n"
                 "    def __getitem__(self,i):\n        x1,x2=self.pairs[i]\n        return torch.from_numpy(x1),torch.from_numpy(x2),self.labels[i]\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData\n"
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "history=[]\n"
                  "for e in range(EPOCHS):\n"
@@ -433,6 +474,8 @@ def get_templates(model_type):
                  "    loss_val=epoch_loss/n\n"
                  "    history.append((e,loss_val))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_REG)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\n"
@@ -463,13 +506,15 @@ def get_templates(model_type):
                 "    D=A.sum(1).pow(-0.5)\n"
                 "    D[torch.isinf(D)]=0\n"
                 "    return torch.diag(D)@A@torch.diag(D)\n")
-        train = ("import torch,torch.nn as nn\nfrom config import *\nfrom model import {cn}\nfrom data import SynData,build_adj\n"
+        train = ("import torch,torch.nn as nn,os\nfrom config import *\nfrom model import {cn}\nfrom data import SynData,build_adj\n"
                  "ds=SynData()\n"
                  "X=torch.stack([ds[i][0] for i in range(len(ds))])\n"
                  "y=torch.tensor([ds[i][1] for i in range(len(ds))])\n"
                  "adj=build_adj(len(ds),ds.edges)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "o=torch.optim.Adam(m.parameters(),lr=LR)\n"
                  "criterion=nn.CrossEntropyLoss()\n"
                  "history=[]\n"
@@ -483,6 +528,8 @@ def get_templates(model_type):
                  "        loss_val=l.item()\n"
                  "    history.append((e,loss_val,acc))\n"
                  "    print(f'Epoch {e:3d}: loss={loss_val:.4f}, acc={acc:.4f}')\n"
+                 "    if loss_val<best_loss:\n        best_loss=loss_val\n        torch.save(m.state_dict(),'best_model.pth')\n"
+                 "    if e%SAVE_EVERY==0:\n        torch.save({'epoch':e,'model':m.state_dict(),'opt':o.state_dict()},f'checkpoints/ckpt_{e:04d}.pth')\n"
                  "torch.save(m.state_dict(),'model.pth')\n"
                  + _FOOTER_CLS)
         eval_ = ("import torch,numpy as np\nfrom config import *\nfrom model import {cn}\nfrom data import SynData,build_adj\n"
