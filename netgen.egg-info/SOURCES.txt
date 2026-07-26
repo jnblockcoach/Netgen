@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+netgen/__init__.py
+netgen/__main__.py
+netgen/architectures.py
+netgen/cli.py
+netgen/datasets.py
+netgen/generator.py
+netgen/search.py
+netgen/templates.py
+netgen.egg-info/PKG-INFO
+netgen.egg-info/SOURCES.txt
+netgen.egg-info/dependency_links.txt
+netgen.egg-info/entry_points.txt
+netgen.egg-info/requires.txt
+netgen.egg-info/top_level.txt

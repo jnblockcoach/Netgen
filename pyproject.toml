@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netgen"
+version = "0.2.0"
+description = "Batch Neural Network Model Generator - Generate diverse PyTorch models with target parameter counts"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+authors = [
+    {name = "NetGen contributors"}
+]
+keywords = ["pytorch", "neural-network", "deep-learning", "model-generator", "nas"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0.0",
+    "numpy",
+]
+
+[project.optional-dependencies]
+datasets = ["scikit-learn", "torchvision"]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+netgen = "netgen.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/user/netgen"
+
+[tool.setuptools.packages.find]
+include = ["netgen*"]

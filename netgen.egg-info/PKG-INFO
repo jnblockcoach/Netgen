@@ -1,0 +1,84 @@
+Metadata-Version: 2.4
+Name: netgen
+Version: 0.2.0
+Summary: Batch Neural Network Model Generator - Generate diverse PyTorch models with target parameter counts
+Author: NetGen contributors
+License: MIT
+Project-URL: Homepage, https://github.com/user/netgen
+Keywords: pytorch,neural-network,deep-learning,model-generator,nas
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0.0
+Requires-Dist: numpy
+Provides-Extra: datasets
+Requires-Dist: scikit-learn; extra == "datasets"
+Requires-Dist: torchvision; extra == "datasets"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: pytest-cov; extra == "dev"
+
+# NetGen - Batch Neural Network Model Generator
+
+Generate N model training folders with verified parameter counts in a target range.
+
+## Quick Start
+
+```bash
+# Generate 50 ML models with 10K-100K params
+python netgen.py --range 10000-20000 --count 20 --output ./my_models
+
+# Generate big models
+python netgen.py --range 500000-1000000 --count 10 --output ./big_models
+
+# Command format
+python netgen.py --range <range> --count <count> --output <file path>
+
+```
+
+## Each Generated Folder
+
+```
+001-mlp-200x150x80/
+├── model.py      # Model definition (PyTorch nn.Module)
+├── data.py       # Synthetic dataset (SynData class)
+├── train.py      # Training script (CE loss, Adam)
+├── eval.py       # Evaluation script
+├── config.py     # Hyperparameters
+└── README.md     # Documentation
+```
+
+## Run a Model
+
+```bash
+cd 001-mlp-200x150x80
+python train.py
+python eval.py
+```
+
+## Supported Architectures
+
+- **MLP**: Multi-layer Perceptron
+- **Deep MLP** (`deep`): Many hidden layers (same width) — scales as N×d²
+- **Wide Net** (`wide`): One huge hidden layer — scales as d_in×d_hidden
+- **LSTM**: Long Short-Term Memory
+- **GRU**: Gated Recurrent Unit
+- **CNN**: Convolutional Neural Network (8×8 images)
+- **AE**: Autoencoder
+- **Stacked AE** (`sae`): Deep autoencoder with multiple encoder/decoder layers
+- **VAE**: Variational Autoencoder
+- **Transformer** (`tf`): Transformer encoder stack — scales as L×d_model²
+- **Linear**: Single linear layer (regression)
+
+**Range coverage**: 2 params (Linear(1,1)) to 10¹²+ params (Deep with 100K×100 layers).
+For huge ranges (>100M), deep/wide/transformer architectures are preferred automatically.

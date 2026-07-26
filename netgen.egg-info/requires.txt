@@ -1,0 +1,10 @@
+torch>=2.0.0
+numpy
+
+[datasets]
+scikit-learn
+torchvision
+
+[dev]
+pytest
+pytest-cov
