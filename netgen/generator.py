@@ -245,13 +245,106 @@ def _get_dataset_info(dataset: str) -> str:
 # ── train.py generator ──
 
 def gen_enhanced_train(tier: str, model_type: str, class_name: str) -> str:
-    """Generate train.py with argparse support injected."""
+    """Generate train.py with argparse + improved training display."""
     _, train_code, _ = get_templates(tier, model_type)
     train_code = train_code.replace(
         "from config import *\nfrom model import {cn}\nfrom data import",
         _ARGPARSE_TRAIN + "from model import {cn}\nfrom data import"
     )
-    return train_code.replace('{cn}', class_name)
+    train_code = train_code.replace('{cn}', class_name)
+
+    # Post-process: enhance training display with progress bar + epoch counter
+    train_code = _enhance_training_display(train_code)
+
+    return train_code
+
+
+def _enhance_training_display(code: str) -> str:
+    """Inject progress bar and improved formatting into training loop."""
+    import re
+
+    # 1. Add total_batches before epoch loop
+    code = code.replace(
+        'for e in range(EPOCHS):',
+        'total_batches=len(lo)\nfor e in range(EPOCHS):'
+    )
+
+    # 2. Convert 'for x,y in lo:' to 'for i,(x,y) in enumerate(lo):'
+    #    and add progress bar update after o.step()
+    progress_snippet = (
+        '        if i%max(1,total_batches//20)==0:'
+        '\n            pct=(i+1)/total_batches*100'
+        '\n            bar="#"*int(pct//5)+"-"*(20-int(pct//5))'
+        '\n            print(f"\\r  Epoch {e+1:3d}/{EPOCHS} [{bar}] {pct:5.1f}%",end="",flush=True)'
+    )
+
+    # Pattern: for x,y in lo:\n        l=...\n        o.zero_grad();l.backward();o.step()
+    # Replace with: for i,(x,y) in enumerate(lo):\n        l=...\n        o.zero_grad();l.backward();o.step()\n        <progress>
+    code = re.sub(
+        r'for (\w+),(\w+) in lo:',
+        r'for i,(\1,\2) in enumerate(lo):',
+        code
+    )
+    # Handle single-input case: for x in lo:
+    code = re.sub(
+        r'for (\w+) in lo:',
+        r'for i,\1 in enumerate(lo):',
+        code
+    )
+    # Handle triple-input case: for x1,x2,y in lo:
+    code = re.sub(
+        r'for (\w+),(\w+),(\w+) in lo:',
+        r'for i,(\1,\2,\3) in enumerate(lo):',
+        code
+    )
+
+    # Insert progress bar after o.step() (or od.step() for GAN)
+    code = re.sub(
+        r'(\bo\.step\(\))',
+        r'\1\n' + progress_snippet.replace('\\', '\\\\'),
+        code
+    )
+    # GAN: od.step() and og.step() — add progress after od.step()
+    code = re.sub(
+        r'(\bod\.step\(\))',
+        r'\1\n' + progress_snippet.replace('\\', '\\\\'),
+        code
+    )
+
+    # 3. Improve epoch print format (overwrite progress bar with \r)
+    code = re.sub(
+        r"print\(f'Epoch \{e:3d\}: loss=\{loss_val:\.4f\}, acc=\{acc:\.4f\}'\)",
+        r"print(f'\\r  Epoch {e+1:3d}/{EPOCHS} | loss={loss_val:.4f}  acc={acc:.4f}          ')",
+        code
+    )
+    code = re.sub(
+        r"print\(f'Epoch \{e:3d\}: loss=\{loss_val:\.4f\}'\)",
+        r"print(f'\\r  Epoch {e+1:3d}/{EPOCHS} | loss={loss_val:.4f}          ')",
+        code
+    )
+    code = re.sub(
+        r"print\(f'Epoch \{e:3d\}: recon_loss=\{recon_loss:\.4f\}'\)",
+        r"print(f'\\r  Epoch {e+1:3d}/{EPOCHS} | recon_loss={recon_loss:.4f}          ')",
+        code
+    )
+    code = re.sub(
+        r"print\(f'Epoch \{e:3d\}: d_loss=\{dl:\.4f\}, g_loss=\{gl:\.4f\}'\)",
+        r"print(f'\\r  Epoch {e+1:3d}/{EPOCHS} | d_loss={dl:.4f}  g_loss={gl:.4f}          ')",
+        code
+    )
+    code = re.sub(
+        r"print\(f'Epoch \{e:3d\}: loss=\{loss_val:\.4f\}, acc1=\{a1:\.4f\}, acc2=\{a2:\.4f\}'\)",
+        r"print(f'\\r  Epoch {e+1:3d}/{EPOCHS} | loss={loss_val:.4f}  acc1={a1:.4f}  acc2={a2:.4f}          ')",
+        code
+    )
+
+    # 4. Improve model info header
+    code = code.replace(
+        "print(f'Model: {total_params} parameters')",
+        "print(f'Model: {total_params} parameters | Epochs: {EPOCHS} | Batch: {BATCH_SIZE}\\n')"
+    )
+
+    return code
 
 
 # ── predict.py generator ──
