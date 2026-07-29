@@ -137,14 +137,21 @@ def _cmd_generate(args):
         print(f"Note: Found {len(candidates)} candidates (requested {args.count}).")
 
     generated = 0
-    for i, (description, code, params, input_dim, output_dim, model_type) in enumerate(
-            candidates[:args.count]):
-        folder = gen_folder(
-            output_dir, i + 1, description, code, "M{}",
-            params, input_dim, output_dim, model_type, args.dataset
-        )
-        label = _TYPE_LABELS.get(model_type, model_type)
-        print(f"  [{i + 1:3d}] {os.path.basename(folder)}: {params:>12,} params  [{label}]")
+    tasks = [
+        (output_dir, i + 1, desc, code, "M{}", params, input_dim, output_dim, model_type, args.dataset)
+        for i, (desc, code, params, input_dim, output_dim, model_type) in enumerate(candidates[:args.count])
+    ]
+
+    if args.jobs > 1:
+        from multiprocessing import Pool
+        with Pool(min(args.jobs, len(tasks))) as pool:
+            folders = pool.starmap(gen_folder, tasks)
+    else:
+        folders = [gen_folder(*t) for t in tasks]
+
+    for i, folder in enumerate(folders):
+        label = _TYPE_LABELS.get(candidates[i][5], candidates[i][5])
+        print(f"  [{i + 1:3d}] {os.path.basename(folder)}: {candidates[i][2]:>12,} params  [{label}]")
         generated += 1
 
     print(f"\nGenerated {generated} models in {output_dir}")
@@ -215,6 +222,8 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--preset", "-p", default=None,
                      choices=['cv', 'nlp', 'gen', 'light', 'all'],
                      help="Preset filter: cv, nlp, gen, light, all.")
+    gen.add_argument("--jobs", "-j", type=int, default=1,
+                     help="Parallel workers for generation (default: 1).")
 
     # netgen list
     lst = sub.add_parser("list", aliases=["ls"],
