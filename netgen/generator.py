@@ -219,10 +219,11 @@ def _rewrite_model_dims(code: str, old_in: int, old_out: int,
 # ── config.py generator ──
 
 def gen_config(input_dim: int, output_dim: int,
-               loss_type: str = "ce", dataset: str = "syn") -> str:
-    """Generate config.py with clear comments."""
+               loss_type: str = "ce", dataset: str = "syn",
+               model_type: str = "ce") -> str:
+    """Generate config.py with clear comments and architecture-specific params."""
     dataset_info = _get_dataset_info(dataset)
-    return (
+    base = (
         f"# ===========================================\n"
         f"#  CONFIG — all hyperparameters live here\n"
         f"# ===========================================\n\n"
@@ -244,6 +245,24 @@ def gen_config(input_dim: int, output_dim: int,
         f"SEED = 42                    # random seed\n"
         f"LOSS_TYPE = '{loss_type}'    # loss function variant\n"
     )
+
+    # Architecture-specific params
+    extra = ""
+    if model_type in ('vae',):
+        extra = "BETA = 0.01                  # KL divergence weight (VAE only)\n"
+    elif model_type == 'gan':
+        extra = (
+            "G_LR = 0.001                # generator learning rate (GAN only)\n"
+            "D_LR = 0.001                # discriminator learning rate (GAN only)\n"
+        )
+    elif model_type == 'contrastive':
+        extra = "TEMPERATURE = 0.5           # contrastive temperature\n"
+    elif model_type == 'siamese':
+        extra = "MARGIN = 1.0                # siamese margin\n"
+    elif model_type in ('ce', 'cnn', 'rnn', 'mt'):
+        extra = "LABEL_SMOOTHING = 0.0       # label smoothing (classification)\n"
+
+    return base + extra
 
 
 def _get_dataset_info(dataset: str) -> str:
@@ -455,22 +474,85 @@ def gen_predict(class_name: str, input_dim: int, model_type: str) -> str:
 # ── visualize.py generator ──
 
 def gen_visualize(model_type: str) -> str:
-    """Generate visualize.py — metric label varies by model type."""
+    """Generate visualize.py — reads training_log.md, plots REAL data."""
     meta = _ARCH_META.get(model_type, _ARCH_META['ce'])
+
+    # Determine which columns to expect based on model type
+    if model_type == 'gan':
+        cols = "['epoch', 'd_loss', 'g_loss']"
+        y_axes = "[('D Loss', 'd_loss', 'tab:red'), ('G Loss', 'g_loss', 'tab:blue')]"
+    elif model_type == 'mt':
+        cols = "['epoch', 'loss', 'acc1', 'acc2']"
+        y_axes = "[('Loss', 'loss', 'tab:red'), ('Acc1', 'acc1', 'tab:blue'), ('Acc2', 'acc2', 'tab:green')]"
+    elif model_type in ('ae', 'vae'):
+        cols = "['epoch', 'recon_loss']"
+        y_axes = "[('Reconstruction Loss', 'recon_loss', 'tab:blue')]"
+    elif model_type == 'mse':
+        cols = "['epoch', 'loss']"
+        y_axes = "[('Loss (MSE)', 'loss', 'tab:red')]"
+    else:
+        cols = "['epoch', 'loss', 'accuracy']"
+        y_axes = "[('Loss', 'loss', 'tab:red'), ('Accuracy', 'accuracy', 'tab:green')]"
+
     return (
-        "import matplotlib.pyplot as plt\n"
-        "import numpy as np\n\n"
-        "# Replace this with your actual logged metrics from training\n"
-        "epochs = list(range(0, 30, 10))\n"
-        f"values = [0.3, 0.6, 0.7]  # example values — replace with real {meta['metric']}\n\n"
-        "plt.plot(epochs, values, 'o-', label='" + meta['metric'] + "')\n"
-        "plt.xlabel('Epoch')\n"
-        f"plt.ylabel('{meta['metric']}')\n"
-        "plt.title('Training Progress')\n"
-        "plt.legend()\n"
-        "plt.grid(True)\n"
-        "plt.savefig('training_curve.png')\n"
-        "print('Saved training_curve.png')\n"
+        '"""Visualize training progress — reads training_log.md and plots real curves."""\n'
+        'import re\n'
+        'import matplotlib\n'
+        'import matplotlib.pyplot as plt\n'
+        "matplotlib.use('Agg')\n"
+        '\n'
+        '# ── Parse training_log.md ──\n'
+        'try:\n'
+        "    with open('training_log.md', 'r') as f:\n"
+        '        text = f.read()\n'
+        'except FileNotFoundError:\n'
+        '    print("No training_log.md found. Train first with: python train.py")\n'
+        '    exit(1)\n'
+        '\n'
+        '# Extract table rows\n'
+        f'expected_cols = {cols}\n'
+        'rows = []\n'
+        'for line in text.split("\\n"):\n'
+        '    parts = [p.strip() for p in line.split("|")[1:-1]]\n'
+        '    if len(parts) >= 2 and parts[0].isdigit():\n'
+        '        try:\n'
+        '            row = [float(p) if "." in p or p.replace("-","").isdigit() else None for p in parts]\n'
+        '            row[0] = int(parts[0])\n'
+        '            rows.append(row)\n'
+        '        except ValueError:\n'
+        '            continue\n'
+        '\n'
+        'if not rows:\n'
+        '    print("No training data found in training_log.md")\n'
+        '    exit(1)\n'
+        '\n'
+        '# Build data dict\n'
+        'data = {}\n'
+        'for i, col in enumerate(expected_cols):\n'
+        '    if i < len(rows[0]):\n'
+        f'        data[col] = [r[i] for r in rows if r[i] is not None]\n'
+        '\n'
+        '# ── Plot ──\n'
+        f'y_axes = {y_axes}\n'
+        'n_plots = len(y_axes)\n'
+        'fig, axes = plt.subplots(n_plots, 1, figsize=(10, 4 * n_plots), sharex=True)\n'
+        'if n_plots == 1:\n'
+        '    axes = [axes]\n'
+        '\n'
+        'for ax, (label, key, color) in zip(axes, y_axes):\n'
+        '    if key in data and len(data[key]) == len(data.get("epoch", [])):\n'
+        '        ax.plot(data["epoch"], data[key], "o-", color=color, markersize=3, label=label)\n'
+        '        ax.set_ylabel(label, color=color)\n'
+        '        ax.legend(loc="upper right")\n'
+        '        ax.grid(True, alpha=0.3)\n'
+        '    else:\n'
+        '        ax.text(0.5, 0.5, f"No data for {label}", ha="center", va="center", transform=ax.transAxes)\n'
+        '\n'
+        'axes[-1].set_xlabel("Epoch")\n'
+        'fig.suptitle("Training Progress", fontsize=14, fontweight="bold")\n'
+        'plt.tight_layout()\n'
+        'plt.savefig("training_curve.png", dpi=150)\n'
+        'print("Saved training_curve.png")\n'
     )
 
 
@@ -624,7 +706,7 @@ def gen_folder(base_dir: str, index: int, description: str, code: str,
 
     # --- config.py (after dims are final) ---
     write_file(os.path.join(folder, "config.py"),
-               gen_config(input_dim, output_dim, loss_type, dataset))
+               gen_config(input_dim, output_dim, loss_type, dataset, model_type))
 
     # --- model.py ---
     write_file(os.path.join(folder, "model.py"),
