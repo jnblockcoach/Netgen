@@ -1,6 +1,7 @@
-# NetGen — Batch Neural Network Model Generator
+# NetGen — Batch Neural Network Model Generator & Manager
 
-Generate diverse PyTorch model training folders with verified parameter counts.
+Generate diverse PyTorch model training folders with verified parameter counts,
+then manage, compare, and benchmark them.
 
 Use cases: benchmarking, NAS prototyping, education, training pipeline testing.
 
@@ -10,62 +11,89 @@ Use cases: benchmarking, NAS prototyping, education, training pipeline testing.
 pip install -e .
 ```
 
-## Usage
+## Commands
 
 ```
-python -m netgen --range <min>-<max> --count <N> [--output <dir>] [--arch <filter>] [--dataset <name>] [--seed <S>]
+netgen generate --range <min>-<max> --count <N> [options]
+netgen list     [--dir <path>]
+netgen info     <id> [--dir <path>]
+netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
+netgen benchmark [--dir <path>] [--epochs N] [--lr X]
+netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
+netgen export   [--dir <path>] [--format md|csv|json]
+netgen archs    [--tree|--list]
 ```
 
-| Option | Required | Default | Description |
-|--------|:-------:|---------|-------------|
-| `--range` | ✓ | — | Parameter count range, e.g. `10000-20000` |
-| `--count` | | 20 | Number of models to generate |
-| `--output` `-o` | | `./generated_models` | Output directory |
-| `--arch` | | all | Comma-separated filter, e.g. `mlp,cnn,lstm` |
-| `--dataset` | | `syn` | Dataset: `syn`, `iris`, `wine`, `breast_cancer`, `moons`, `circles`, `blobs`, `mnist`, `cifar10`, `text`, `line` |
-| `--seed` | | 42 | Random seed |
+### `generate` — Create model folders
 
-### Examples
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--range` | *required* | Parameter count range, e.g. `10000-20000` |
+| `--count` | 20 | Number of models |
+| `--output` `-o` | `./generated_models` | Output directory |
+| `--arch` | all | Filter architectures, e.g. `mlp,cnn,lstm` |
+| `--preset` `-p` | — | Quick filter: `cv`, `nlp`, `gen`, `light` |
+| `--dataset` | `syn` | Dataset name |
+| `--seed` | 42 | Random seed |
+| `--jobs` `-j` | 1 | Parallel workers |
 
 ```bash
-# 20 models with 10K–20K params
-python -m netgen --range 10000-20000 --count 20
+netgen generate --range 10000-20000 --count 20
+netgen generate --preset cv --range 5000-50000 --count 10
+netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
+netgen generate --range 5000000000-10000000000 --count 3
+```
 
-# Only MLP and CNN
-python -m netgen --range 5000-50000 --count 10 --arch mlp,cnn
+### `benchmark` — Train all & rank
 
-# With real dataset
-python -m netgen --range 1000-10000 --count 5 --dataset iris
+```bash
+netgen benchmark --epochs 10
+netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
+```
 
-# Huge models
-python -m netgen --range 5000000000-10000000000 --count 3
+Outputs a live leaderboard and saves `benchmark_report.md`.
+
+### `list` / `info` / `compare` / `clean` / `export` — Manage models
+
+```bash
+netgen list                          # Table of all models + training status
+netgen info 001                      # Detailed view of one model
+netgen compare --sort accuracy       # Rank trained models
+netgen clean --untrained --dry-run   # Preview removal
+netgen clean --keep-best 3 --force   # Keep only top 3
+netgen export --format md            # Save comparison report
+```
+
+### `archs` — Browse architectures
+
+```bash
+netgen archs          # Family tree (9 families, 31 architectures)
+netgen archs --list   # Flat list with descriptions
 ```
 
 ## File Architecture (3 Tiers)
 
-Generated folders scale with parameter count:
-
-| Tier | Params | Files | Capabilities |
-|------|--------|:-----:|-------------|
-| **Quick** | < 50K | 8 | Basic training loop, `training_log.md`, `data_explore.py`, checkpoints & best model |
-| **Standard** | 50K ~ 50M | 12 | + lr scheduler, early stopping, checkpoints, sweep, visualize |
+| Tier | Params | Files | Highlights |
+|------|--------|:-----:|-----------|
+| **Quick** | < 50K | 8 | Basic training, `training_log.md`, `data_explore.py`, checkpoints & best model |
+| **Standard** | 50K ~ 50M | 12 | + lr scheduler, early stopping, sweep, real visualize |
 | **Production** | > 50M | 17+ | + DDP, AMP, model sub-package, benchmark, profile, ONNX export |
 
 ### Quick Tier
 
 ```
 001-mlp-200x150x80/
-├── config.py         # Hyperparameters (LR, epochs, dims, dataset)
+├── config.py         # All hyperparameters (LR, epochs, optimizer, scheduler...)
 ├── data.py           # Dataset loader
-├── data_explore.py   # Inspect the dataset — stats & shapes
+├── data_explore.py   # One-click data inspection
 ├── model.py          # PyTorch nn.Module
-├── train.py          # Training (argparse: --lr --epochs --batch-size)
+├── train.py          # Training (all CLI args supported)
 ├── eval.py           # Evaluation
 ├── predict.py        # Inference demo
-├── visualize.py      # Training curve plot
-├── checkpoints/      # Periodic checkpoints (every SAVE_EVERY epochs)
+├── visualize.py      # Reads training_log.md, plots real curves
+├── checkpoints/      # Periodic checkpoints
 ├── best_model.pth    # Auto-saved (lowest loss)
-├── model.pth         # Final model (end of training)
+├── model.pth         # Final model
 ├── requirements.txt
 └── README.md         # Task-specific summary
 ```
@@ -74,26 +102,17 @@ Generated folders scale with parameter count:
 
 ```
 ├── sweep.py          # Grid search lr × batch_size
-├── visualize.py      # Reads training_log.md (real data)
-├── predict.py        # Batch inference from best_model.pth
-└── (all Quick-tier features included: checkpoints, best_model, model.pth)
+└── (all Quick-tier features included)
 ```
 
 ### Production Tier (adds)
 
 ```
 ├── model/            # Modular sub-package
-│   ├── __init__.py
-│   └── layers.py
 ├── configs/          # YAML presets
-│   ├── default.yaml
-│   └── large.yaml
-├── scripts/
-│   ├── benchmark.py  # Latency & throughput
-│   ├── profile.py    # FLOPs & memory
-│   └── export.py     # ONNX / TorchScript
+├── scripts/          # benchmark, profile, ONNX export
 ├── logs/             # Detailed CSV logs
-└── checkpoints/
+└── (all Standard-tier features included)
 ```
 
 ## Running a Model
@@ -104,18 +123,39 @@ cd 001-mlp-200x150x80
 # 1. Inspect the data
 python data_explore.py
 
-# 2. Train (auto-generates training_log.md)
+# 2. Train
 python train.py --epochs 50 --lr 0.001 --batch-size 128
 
-# 3. Evaluate
+# 3. Resume from checkpoint
+python train.py --resume checkpoints/ckpt_0010.pth --epochs 100
+
+# 4. Evaluate
 python eval.py
 
-# 4. Visualize (Standard+) — reads training_log.md
+# 5. Visualize
 python visualize.py
-
-# 5. Hyperparameter sweep (Standard+)
-python sweep.py
 ```
+
+### Training CLI Reference
+
+```
+python train.py [options]
+
+--lr FLOAT            Learning rate (default: 0.001)
+--epochs INT          Training epochs (default: 30)
+--batch-size INT      Batch size (default: 64)
+--save-every INT      Checkpoint interval (default: 10)
+--optimizer STR       adam | sgd | adamw
+--weight-decay FLOAT  L2 regularization
+--momentum FLOAT      Momentum for SGD
+--scheduler STR       none | cosine | plateau | step
+--patience INT        Early stopping patience
+--grad-clip FLOAT     Gradient clipping max norm
+--seed INT            Random seed
+--resume PATH         Resume from checkpoint
+```
+
+Architecture-specific config: VAE has `BETA`, GAN has `G_LR`/`D_LR`, Contrastive has `TEMPERATURE`, Siamese has `MARGIN`, Classification has `LABEL_SMOOTHING`.
 
 ## Dataset Compatibility
 
@@ -129,56 +169,21 @@ python sweep.py
 
 ## Architectures (31 total)
 
-### Universal (any param range)
+### Universal (any range) — 8
 
-| Key | Architecture | Scaling |
-|-----|-------------|---------|
-| `mlp` | 3-layer MLP | d1·d2 + d2·d3 |
-| `deep` | Deep MLP | N × d² |
-| `wide` | Wide Net | d_in × d_hidden |
-| `resblock` | Residual Blocks | N × 2·d·h |
-| `highway` | Highway Network | N × 2·d² |
-| `moe` | Mixture of Experts | E × 2·d·h |
-| `transformer` | Transformer Encoder | L × d_model² |
-| `sae` | Stacked Autoencoder | N × 2·h² |
+`mlp` `deep` `wide` `resblock` `highway` `moe` `transformer` `sae`
 
-### Classic (up to 5M–10M params)
+### Classic (up to 5M–10M) — 12
 
-| Key | Architecture | Max Params |
-|-----|-------------|:----------:|
-| `unary` | 1-param variants (a/b/c) | 1 |
-| `linear` | Single linear layer | 5M |
-| `cnn` | Convolutional (8×8) | 5M |
-| `lstm` | LSTM | 5M |
-| `gru` | GRU | 5M |
-| `bilstm` | BiLSTM | 5M |
-| `ae` | Autoencoder | 5M |
-| `vae` | Variational AE | 5M |
-| `gan` | GAN | 10M |
-| `multitask` | Multi-Task | 10M |
-| `contrastive` | Contrastive Learning | 10M |
-| `siamese` | Siamese Network | 10M |
+`unary` (a/b/c) `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
 
-### Medium (≥ 100K params)
+### Medium (≥ 100K) — 6
 
-| Key | Architecture | Description |
-|-----|-------------|-------------|
-| `rescnn` | Residual CNN | Multi-stage with skip connections |
-| `sepcnn` | Separable CNN | Depthwise + pointwise (MobileNet style) |
-| `densecnn` | Dense CNN | Dense connections (DenseNet style) |
-| `attnlstm` | Attention LSTM | LSTM + multi-head self-attention pooling |
-| `selfattn` | Self-Attention | Pure attention, no RNN/CNN |
-| `gcn` | Graph ConvNet | 2-layer GCN for node classification |
+`rescnn` `sepcnn` `densecnn` `attnlstm` `selfattn` `gcn`
 
-### Large (≥ 10M params)
+### Large (≥ 10M) — 5
 
-| Key | Architecture | Description |
-|-----|-------------|-------------|
-| `vit` | Vision Transformer | Patch embedding + Transformer encoder |
-| `unet` | U-Net | Encoder-decoder with skip connections |
-| `mixer` | MLP-Mixer | Token-mixing + channel-mixing MLPs |
-| `gpt` | GPT Decoder | Causal transformer for language modeling |
-| `t5` | T5 Encoder-Decoder | Full encoder-decoder transformer |
+`vit` `unet` `mixer` `gpt` `t5`
 
 ## Datasets
 
@@ -201,11 +206,9 @@ python sweep.py
 ```python
 from netgen import find_candidates, gen_folder, list_architectures
 
-# Search architectures
 candidates = find_candidates(lo=10000, hi=20000, count=10, seed=42,
                              arch_filter=['mlp', 'cnn', 'lstm'])
 
-# Generate a folder
 for desc, code, params, inp, outp, mtype in candidates:
     gen_folder('./output', 1, desc, code, 'M{}', params, inp, outp, mtype,
                dataset='iris')
@@ -217,5 +220,5 @@ for desc, code, params, inp, outp, mtype in candidates:
 - PyTorch ≥ 2.0
 - numpy
 - matplotlib (for visualize.py)
-- scikit-learn (optional, for real datasets)
-- torchvision (optional, for MNIST / CIFAR-10)
+- scikit-learn (optional)
+- torchvision (optional)

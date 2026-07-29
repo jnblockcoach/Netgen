@@ -1,6 +1,6 @@
-# NetGen — 批量神经网络模型生成器
+# NetGen — 批量神经网络模型生成器 & 管理器
 
-根据指定参数量范围，批量生成可直接运行的 PyTorch 模型训练文件夹。
+根据参数量范围生成 PyTorch 模型训练文件夹，并提供管理、对比、基准测试功能。
 
 适用：基准测试、NAS 原型、教学演示、训练管线测试。
 
@@ -10,91 +10,90 @@
 pip install -e .
 ```
 
-## 命令格式
+## 命令一览
 
 ```
-python -m netgen --range <最小值>-<最大值> --count <数量> [--output <目录>] [--arch <筛选>] [--dataset <名称>] [--seed <种子>]
+netgen generate --range <min>-<max> --count <N> [选项]
+netgen list     [--dir <path>]
+netgen info     <id> [--dir <path>]
+netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
+netgen benchmark [--dir <path>] [--epochs N] [--lr X]
+netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
+netgen export   [--dir <path>] [--format md|csv|json]
+netgen archs    [--tree|--list]
 ```
 
-| 参数 | 必填 | 默认值 | 说明 |
-|------|:--:|--------|------|
-| `--range` | ✓ | — | 参数量范围，如 `10000-20000` |
-| `--count` | | 20 | 生成模型数量 |
-| `--output` `-o` | | `./generated_models` | 输出目录 |
-| `--arch` | | 全部 | 架构筛选，逗号分隔，如 `mlp,cnn,lstm` |
-| `--dataset` | | `syn` | 数据集：`syn`、`iris`、`wine`、`breast_cancer`、`moons`、`circles`、`blobs`、`mnist`、`cifar10`、`text`、`line` |
-| `--seed` | | 42 | 随机种子 |
+### `generate` — 生成模型
 
-### 示例
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--range` | *必填* | 参数量范围，如 `10000-20000` |
+| `--count` | 20 | 生成数量 |
+| `--output` `-o` | `./generated_models` | 输出目录 |
+| `--arch` | 全部 | 架构筛选，如 `mlp,cnn,lstm` |
+| `--preset` `-p` | — | 快捷筛选：`cv`、`nlp`、`gen`、`light` |
+| `--dataset` | `syn` | 数据集名称 |
+| `--seed` | 42 | 随机种子 |
+| `--jobs` `-j` | 1 | 并行进程数 |
 
 ```bash
-# 生成 20 个 1万~2万 参数的模型
-python -m netgen --range 10000-20000 --count 20
+netgen generate --range 10000-20000 --count 20
+netgen generate --preset cv --range 5000-50000 --count 10
+netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
+```
 
-# 只生成 MLP 和 CNN
-python -m netgen --range 5000-50000 --count 10 --arch mlp,cnn
+### `benchmark` — 一键对比训练
 
-# 使用真实数据集
-python -m netgen --range 1000-10000 --count 5 --dataset iris
+```bash
+netgen benchmark --epochs 10
+netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
+```
 
-# 超大模型
-python -m netgen --range 5000000000-10000000000 --count 3
+自动训练目录内所有未训练模型，输出排行榜并保存 `benchmark_report.md`。
+
+### `list` / `info` / `compare` / `clean` / `export` — 模型管理
+
+```bash
+netgen list                          # 模型状态一览
+netgen info 001                      # 单个模型详情
+netgen compare --sort accuracy       # 横向对比
+netgen clean --untrained --dry-run   # 预览删除
+netgen clean --keep-best 3 --force   # 保留最优 3 个
+netgen export --format md            # 导出对比报告
+```
+
+### `archs` — 架构浏览
+
+```bash
+netgen archs          # 家族树（9 个家族，31 种架构）
+netgen archs --list   # 平铺列表 + 描述
 ```
 
 ## 文件架构（3 层）
 
-生成的文件夹根据参数量自动分层：
-
-| 层级 | 参数范围 | 文件数 | 能力 |
+| 层级 | 参数范围 | 文件数 | 亮点 |
 |------|---------|:-----:|------|
-| **Quick** | < 5 万 | 8 | 基础训练 + training_log.md + data_explore.py + checkpoint & best_model |
-| **Standard** | 5 万~5000 万 | 12 | + lr 调度、早停、checkpoint、sweep、真实可视化 |
+| **Quick** | < 5 万 | 8 | 基础训练、training_log.md、data_explore.py、checkpoint & best_model |
+| **Standard** | 5 万~5000 万 | 12 | + lr 调度、早停、sweep、真实可视化 |
 | **Production** | > 5000 万 | 17+ | + DDP、AMP、模型子包、benchmark、profile、ONNX |
 
 ### Quick 层
 
 ```
 001-mlp-200x150x80/
-├── config.py         # 超参数（学习率、epoch、维度、数据集）
-├── data.py           # 数据加载器
-├── data_explore.py   # 数据探查 — 统计信息与形状
+├── config.py         # 全部超参数（LR、epoch、optimizer、scheduler...）
+├── data.py           # 数据集加载器
+├── data_explore.py   # 一键数据探查
 ├── model.py          # PyTorch nn.Module
-├── train.py          # 训练（argparse: --lr --epochs --batch-size）
+├── train.py          # 训练脚本（支持全部 CLI 参数）
 ├── eval.py           # 评估
 ├── predict.py        # 推理演示
-├── visualize.py      # 训练曲线
-├── checkpoints/      # 定时检查点（每 SAVE_EVERY epoch）
-├── best_model.pth    # 自动保存最佳模型（最低 loss）
-├── model.pth         # 最终模型（训练结束）
+├── visualize.py      # 读取 training_log.md 绘制真实曲线
+├── checkpoints/      # 定时检查点
+├── best_model.pth    # 自动保存最佳模型
+├── model.pth         # 最终模型
 ├── requirements.txt
 └── README.md         # 任务说明
-```
-
-### Standard 层（新增）
-
-```
-├── sweep.py          # 超参数网格搜索
-├── visualize.py      # 读取 training_log.md 绘制真实曲线
-├── predict.py        # 批量推理（加载 best_model.pth）
-├── checkpoints/      # 定期检查点
-└── best_model.pth    # 早停最佳模型
-```
-
-### Production 层（新增）
-
-```
-├── model/            # 模块化子包
-│   ├── __init__.py
-│   └── layers.py
-├── configs/          # YAML 预设
-│   ├── default.yaml
-│   └── large.yaml
-├── scripts/
-│   ├── benchmark.py  # 推理延迟与吞吐量
-│   ├── profile.py    # FLOPs / 显存分析
-│   └── export.py     # ONNX / TorchScript 导出
-├── logs/             # CSV 详细日志
-└── checkpoints/
 ```
 
 ## 运行模型
@@ -102,121 +101,70 @@ python -m netgen --range 5000000000-10000000000 --count 3
 ```bash
 cd 001-mlp-200x150x80
 
-# 1. 先看数据
+# 1. 数据探查
 python data_explore.py
 
-# 2. 训练（自动生成 training_log.md）
+# 2. 训练
 python train.py --epochs 50 --lr 0.001 --batch-size 128
 
-# 3. 评估
+# 3. 从 checkpoint 恢复
+python train.py --resume checkpoints/ckpt_0010.pth --epochs 100
+
+# 4. 评估
 python eval.py
 
-# 4. 可视化（Standard+）— 读取 training_log.md
+# 5. 可视化
 python visualize.py
-
-# 5. 超参搜索（Standard+）
-python sweep.py
 ```
 
-## 数据集兼容性
+### 训练参数
 
-`--dataset` 自动筛选兼容架构并重写模型维度：
+```
+python train.py [选项]
 
-| 任务类型 | 数据集 | 自动选择的架构 |
-|---------|--------|-------------|
+--lr           学习率（默认 0.001）
+--epochs       训练轮数（默认 30）
+--batch-size   批量大小（默认 64）
+--save-every   checkpoint 间隔（默认 10）
+--optimizer    adam | sgd | adamw
+--weight-decay L2 正则化
+--momentum     SGD 动量
+--scheduler    none | cosine | plateau | step
+--patience     早停耐心值
+--grad-clip    梯度裁剪阈值
+--seed         随机种子
+--resume       从 checkpoint 恢复
+```
+
+架构专属参数：VAE 有 `BETA`，GAN 有 `G_LR`/`D_LR`，对比学习有 `TEMPERATURE`，孪生网络有 `MARGIN`，分类有 `LABEL_SMOOTHING`。
+
+## 数据集兼容
+
+| 任务类型 | 数据集 | 自动架构筛选 |
+|---------|--------|-----------|
 | 分类 | iris, wine, breast_cancer, moons, circles, blobs, mnist, cifar10, text | linear, mlp, deep, wide, resblock, highway, moe, cnn, multitask |
 | 回归 | line | linear, mlp, deep, wide, resblock |
-| 合成 | syn | 全部 31 种架构 |
+| 合成 | syn | 全部 31 种 |
 
 ## 架构总览（31 种）
 
-### 通用架构（任意参数量）
+### 通用 — 8 种
+`mlp` `deep` `wide` `resblock` `highway` `moe` `transformer` `sae`
 
-| 键 | 架构 | 参数量级 |
-|----|------|---------|
-| `mlp` | 3 层全连接 | d1·d2 + d2·d3 |
-| `deep` | 深度 MLP | N × d² |
-| `wide` | 宽网络 | d_in × d_hidden |
-| `resblock` | 残差块 | N × 2·d·h |
-| `highway` | 高速网络 | N × 2·d² |
-| `moe` | 混合专家 | E × 2·d·h |
-| `transformer` | Transformer 编码器 | L × d_model² |
-| `sae` | 堆叠自编码器 | N × 2·h² |
+### 经典（上限 500万~1000万）— 12 种
+`unary`(a/b/c) `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
 
-### 经典架构（上限 500 万~1000 万）
+### 中型（≥ 10万）— 6 种
+`rescnn` `sepcnn` `densecnn` `attnlstm` `selfattn` `gcn`
 
-| 键 | 架构 | 上限 |
-|----|------|:----:|
-| `unary` | 1 参数变体（a/b/c） | 1 |
-| `linear` | 单层线性 | 500 万 |
-| `cnn` | 卷积网络 | 500 万 |
-| `lstm` | LSTM | 500 万 |
-| `gru` | GRU | 500 万 |
-| `bilstm` | 双向 LSTM | 500 万 |
-| `ae` | 自编码器 | 500 万 |
-| `vae` | 变分自编码器 | 500 万 |
-| `gan` | 生成对抗网络 | 1000 万 |
-| `multitask` | 多任务 | 1000 万 |
-| `contrastive` | 对比学习 | 1000 万 |
-| `siamese` | 孪生网络 | 1000 万 |
-
-### 中型架构（≥ 10 万参数）
-
-| 键 | 架构 | 描述 |
-|----|------|------|
-| `rescnn` | 残差 CNN | 多阶段跳跃连接 |
-| `sepcnn` | 分离卷积 | 深度可分离（MobileNet 风格） |
-| `densecnn` | 密集 CNN | 密集连接（DenseNet 风格） |
-| `attnlstm` | 注意力 LSTM | LSTM + 多头自注意力池化 |
-| `selfattn` | 自注意力 | 纯注意力，无 RNN/CNN |
-| `gcn` | 图卷积网络 | 2 层 GCN 节点分类 |
-
-### 大型架构（≥ 1000 万参数）
-
-| 键 | 架构 | 描述 |
-|----|------|------|
-| `vit` | Vision Transformer | Patch 嵌入 + Transformer 编码器 |
-| `unet` | U-Net | 编码-解码 + 跳跃连接 |
-| `mixer` | MLP-Mixer | Token-mixing + Channel-mixing MLP |
-| `gpt` | GPT 解码器 | Causal Transformer 语言建模 |
-| `t5` | T5 编解码器 | 完整编码器-解码器 Transformer |
-
-## 数据集
-
-| 名称 | 描述 | 特征数 | 类别数 |
-|------|------|--------|--------|
-| `syn` | 合成高斯数据 | 可配置 | 可配置 |
-| `iris` | 鸢尾花 | 4 | 3 |
-| `wine` | 葡萄酒 | 13 | 3 |
-| `breast_cancer` | 乳腺癌 | 30 | 2 |
-| `moons` | 双半月形 | 2 | 2 |
-| `circles` | 同心圆 | 2 | 2 |
-| `blobs` | 高斯团块 | 6 | 5 |
-| `mnist` | 手写数字 | 1×28×28 | 10 |
-| `cifar10` | 自然图像 | 3×32×32 | 10 |
-| `text` | 字符序列 | 20 | 10 |
-| `line` | 线性回归 | 1 | 1 |
-
-## Python API
-
-```python
-from netgen import find_candidates, gen_folder, list_architectures
-
-# 搜索架构
-candidates = find_candidates(lo=10000, hi=20000, count=10, seed=42,
-                             arch_filter=['mlp', 'cnn', 'lstm'])
-
-# 生成文件夹
-for desc, code, params, inp, outp, mtype in candidates:
-    gen_folder('./output', 1, desc, code, 'M{}', params, inp, outp, mtype,
-               dataset='iris')
-```
+### 大型（≥ 1000万）— 5 种
+`vit` `unet` `mixer` `gpt` `t5`
 
 ## 依赖
 
 - Python ≥ 3.8
 - PyTorch ≥ 2.0
 - numpy
-- matplotlib（visualize.py 需要）
-- scikit-learn（真实数据集，可选）
-- torchvision（MNIST / CIFAR-10，可选）
+- matplotlib
+- scikit-learn（可选）
+- torchvision（可选）

@@ -11,13 +11,16 @@
 3. [理解生成的文件](#3-理解生成的文件)
 4. [数据在哪里](#4-数据在哪里)
 5. [训练与评估](#5-训练与评估)
-6. [控制参数量范围](#6-控制参数量范围)
-7. [筛选架构](#7-筛选架构)
-8. [使用真实数据集](#8-使用真实数据集)
-9. [三层文件架构](#9-三层文件架构)
-10. [架构全景（31 种）](#10-架构全景31-种)
-11. [Python API](#11-python-api)
-12. [常见问题](#12-常见问题)
+6. [恢复训练](#6-恢复训练)
+7. [控制参数量范围](#7-控制参数量范围)
+8. [筛选架构](#8-筛选架构)
+9. [使用真实数据集](#9-使用真实数据集)
+10. [三层文件架构](#10-三层文件架构)
+11. [架构全景（31 种）](#11-架构全景31-种)
+12. [模型管理](#12-模型管理)
+13. [一键对比基准测试](#13-一键对比基准测试)
+14. [Python API](#14-python-api)
+15. [常见问题](#15-常见问题)
 
 ---
 
@@ -31,7 +34,7 @@ pip install -e .
 验证：
 
 ```bash
-python -m netgen --help
+netgen --help
 ```
 
 ---
@@ -39,7 +42,7 @@ python -m netgen --help
 ## 2. 第一个命令
 
 ```bash
-python -m netgen --range 500-2000 --count 5 --output ./my_models
+netgen generate --range 500-2000 --count 5 --output ./my_models
 ```
 
 输出：
@@ -60,37 +63,42 @@ Generated 5 models in ./my_models
 
 ## 3. 理解生成的文件
 
-每个文件夹是一个完整的独立项目。以 Quick 层为例：
+以 Quick 层为例：
 
 ```
 001-mlp-200x150x80/
-├── config.py         # 所有超参数（LR、epoch、维度、数据集）
-├── data.py           # 数据加载器
+├── config.py         # 所有超参数（LR、epoch、optimizer、scheduler…）
+├── data.py           # 数据集加载器
 ├── data_explore.py   # 一键数据探查
-├── model.py          # PyTorch 模型定义
-├── train.py          # 训练脚本（支持命令行参数）
-├── eval.py           # 评估脚本
+├── model.py          # 模型定义
+├── train.py          # 训练（argparse 支持全部参数）
+├── eval.py           # 评估
 ├── predict.py        # 推理演示
-├── visualize.py      # 绘制训练曲线
+├── visualize.py      # 读取训练日志画真实曲线
+├── checkpoints/      # 定时检查点
+├── best_model.pth    # 自动保存最佳模型
+├── model.pth         # 训练结束模型
 ├── requirements.txt
-└── README.md         # 任务说明 + 数据来源
+└── README.md         # 任务说明
 ```
 
-所有文件即可运行，无需额外配置。
+所有文件无需额外配置，直接运行。
 
 ---
 
 ## 4. 数据在哪里
 
-### 数据源
+### 查看数据源
 
-打开 `config.py`，第一行就告诉你：
+打开 `config.py`：
 
 ```python
 DATASET = 'syn'        # synthetic Gaussian random data
+INPUT_DIM = 25
+OUTPUT_DIM = 28
 ```
 
-### 用 data_explore.py 查看
+### 一键数据探查
 
 ```bash
 python data_explore.py
@@ -111,17 +119,8 @@ Sample[0] (x) shape: torch.Size([25])
 Sample[1] (y/target): 3
 
 Batch x stats — mean: 0.025, std: 0.991
-Batch x range: [-3.241, 3.926]
 Done.
 ```
-
-### 数据文件对应关系
-
-| 文件 | 作用 |
-|------|------|
-| `config.py` → `DATASET` | 指定用哪个数据源 |
-| `config.py` → `INPUT_DIM` / `OUTPUT_DIM` | 定义特征数和类别/输出维度 |
-| `data.py` | 真正的 PyTorch Dataset，负责加载和预处理 |
 
 ---
 
@@ -130,243 +129,248 @@ Done.
 ```bash
 cd 001-mlp-200x150x80
 
-# 训练
-python train.py --epochs 30 --lr 0.001 --batch-size 128
+# 默认参数
+python train.py
+
+# 自定义超参数
+python train.py --epochs 50 --lr 0.01 --batch-size 32 --optimizer adamw
+
+# 带调度器 + 早停
+python train.py --scheduler cosine --patience 15 --grad-clip 2.0
 
 # 评估
 python eval.py
 
-# 推理演示
-python predict.py
+# 可视化
+python visualize.py
 ```
 
-### training_log.md
-
-训练结束后**自动生成** Markdown 格式的训练日志，无需额外脚本：
+### 训练显示
 
 ```
+Model: 2512 parameters | Epochs: 5 | Batch: 64
+
+  Epoch   1/5 [####################] 100.0%
+  Epoch   1/5 | loss=1.6075  acc=0.3335
+
+  Epoch   2/5 [####################] 100.0%
+  Epoch   2/5 | loss=1.4621  acc=0.3920
+  ...
+```
+
+### 训练日志
+
+`training_log.md` 自动生成：
+
+```markdown
 # Training Log
 
 **Model**: 2512 parameters
 **Dataset**: syn
-**Epochs**: 30
-**Batch Size**: 64
-**Learning Rate**: 0.001
+**Epochs**: 5
 
 | Epoch | Loss | Accuracy |
 |-------|------|----------|
-|     0 | 1.99 | 0.1960   |
-|     1 | 1.59 | 0.3045   |
-|   ... |  ... |    ...   |
-|    29 | 0.42 | 0.8910   |
+|     0 | 1.61 | 0.3335   |
+|     1 | 1.46 | 0.3920   |
 ```
 
-每个 epoch 都记录，分类任务显示 Loss+Accuracy，回归任务显示 Loss。
+分类显示 Loss+Accuracy，回归只显示 Loss，VAE 显示 Recon Loss，GAN 显示 D Loss+G Loss。
 
 ---
 
-## 6. 控制参数量范围
+## 6. 恢复训练
 
 ```bash
-# 极小模型（100~500 参数）
-python -m netgen --range 100-500 --count 5
-
-# 中型模型（1万~5万）
-python -m netgen --range 10000-50000 --count 5
-
-# 大型模型（100万~500万）
-python -m netgen --range 1000000-5000000 --count 5
-
-# 超大模型（50亿~100亿）
-python -m netgen --range 5000000000-10000000000 --count 3
+# 从 checkpoint 继续
+python train.py --resume checkpoints/ckpt_0010.pth --epochs 50
 ```
 
-NetGen 自动在参数范围内搜索合适的维度组合。
+输出：
+
+```
+Resumed from checkpoints/ckpt_0010.pth (epoch 11)
+  Epoch  12/50 [####################] 100.0%  Epoch  12/50 | loss=0.8755  acc=0.6085
+```
+
+恢复内容：模型权重、优化器状态、从断点 +1 epoch 继续。
 
 ---
 
-## 7. 筛选架构
+## 7. 控制参数量范围
 
 ```bash
-# 只要 CNN 和 LSTM
-python -m netgen --range 1000-10000 --count 5 --arch cnn,lstm
-
-# 只要 Transformer
-python -m netgen --range 50000-500000 --count 3 --arch transformer
-
-# 查看所有可用架构
-python -m netgen --help
+netgen generate --range 100-500 --count 5           # 极小
+netgen generate --range 10000-50000 --count 5        # 中等
+netgen generate --range 1000000-5000000 --count 5    # 大型
+netgen generate --range 5000000000-10000000000 --count 3  # 超大
 ```
 
 ---
 
-## 8. 使用真实数据集
+## 8. 筛选架构
+
+### `--arch` 精确筛选
 
 ```bash
-# Iris 鸢尾花
-python -m netgen --range 500-2000 --count 5 --dataset iris
-
-# MNIST 手写数字
-python -m netgen --range 50000-200000 --count 3 --dataset mnist
-
-# CIFAR-10
-python -m netgen --range 100000-500000 --count 3 --dataset cifar10
-
-# 线性回归
-python -m netgen --range 500-2000 --count 3 --dataset line
+netgen generate --range 1000-10000 --count 5 --arch cnn,lstm
+netgen generate --range 50000-500000 --count 3 --arch transformer
 ```
 
-使用真实数据集时，NetGen 自动：
-- 筛选兼容架构（分类数据集不会生成 GAN/AE）
-- 重写模型维度匹配数据集的特征数
-- 切换损失函数（分类→CrossEntropy，回归→MSE）
+### `--preset` 快捷筛选
+
+```bash
+netgen generate --preset cv --range 5000-50000 --count 5    # 图像
+netgen generate --preset nlp --range 1000-10000 --count 3   # 序列
+netgen generate --preset gen --range 500-5000 --count 5     # 生成
+netgen generate --preset light --range 100-500 --count 5    # 轻量
+```
+
+`--preset` 和 `--arch` 可叠加——取二者交集。
+
+### 浏览所有架构
+
+```bash
+netgen archs          # 家族树
+netgen archs --list   # 平铺列表
+```
 
 ---
 
-## 9. 三层文件架构
+## 9. 使用真实数据集
 
-NetGen 根据参数量自动选择文件复杂度：
-
-### Quick（< 5 万参数）
-
-8 个文件，极简训练循环，适合快速实验：
-
-```
-├── train.py    # ~35 行，固定 lr
-├── eval.py     # 计算指标
-└── ...
+```bash
+netgen generate --range 500-2000 --count 5 --dataset iris
+netgen generate --range 50000-200000 --count 3 --dataset mnist
+netgen generate --range 500-2000 --count 3 --dataset line
 ```
 
-### Standard（5 万 ~ 5000 万参数）
+NetGen 自动：
 
-12 个文件，适合正经实验：
-
-| 新增 | 作用 |
-|------|------|
-| lr scheduler | ReduceLROnPlateau 自动降学习率 |
-| 早停 | patience=10，最佳模型存 best_model.pth |
-| checkpoint | 每 SAVE_EVERY epoch 存到 checkpoints/ |
-| 梯度裁剪 | clip_grad_norm_ |
-| sweep.py | 网格搜索 lr × batch_size |
-| visualize.py | 读取 training_log.md 画真实曲线 |
-
-### Production（> 5000 万参数）
-
-17+ 个文件，生产级工程：
-
-| 新增 | 作用 |
-|------|------|
-| DDP | 多 GPU 分布式训练 |
-| AMP | 混合精度（fp16） |
-| 梯度累积 | grad_accum_steps |
-| 验证集 | 自动切 80/20 |
-| model/ | 子包（__init__.py + layers.py） |
-| configs/ | YAML 预设（default.yaml / large.yaml） |
-| benchmark.py | 推理延迟 + 吞吐量 |
-| profile.py | FLOPs + 显存分析 |
-| export.py | ONNX / TorchScript 导出 |
+- 筛选兼容架构（iris → 分类架构，line → 回归架构）
+- 重写模型输入/输出维度匹配数据集
+- 切换损失函数
 
 ---
 
-## 10. 架构全景（31 种）
+## 10. 三层文件架构
 
-### 通用（任意参数量都可用）— 8 种
+| 层级 | 参数 | 文件 | 特点 |
+|------|------|:--:|------|
+| Quick | < 5 万 | 8 | 基础训练 + checkpoint + best_model |
+| Standard | 5 万~5000 万 | 12 | + 早停、sweep、真实可视化 |
+| Production | > 5000 万 | 17+ | + DDP、AMP、子包、benchmark |
 
-`mlp` `deep` `wide` `resblock` `highway` `moe` `transformer` `sae`
-
-### 经典（上限 500 万~1000 万）— 12 种
-
-`unary`（3变体：a/b/c） `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
-
-### 中型（≥ 10 万参数才出现）— 6 种
-
-| 架构 | 领域 | 特点 |
-|------|------|------|
-| `rescnn` | 图像 | 多阶段残差 CNN（ResNet 风格） |
-| `sepcnn` | 图像 | 深度可分离卷积（MobileNet 风格） |
-| `densecnn` | 图像 | 密集连接（DenseNet 风格） |
-| `attnlstm` | 序列 | LSTM + 多头自注意力池化 |
-| `selfattn` | 通用 | 纯自注意力编码器 |
-| `gcn` | 图 | 2 层图卷积网络 |
-
-### 大型（≥ 1000 万参数才出现）— 5 种
-
-| 架构 | 领域 | 特点 |
-|------|------|------|
-| `vit` | 图像 | Vision Transformer |
-| `unet` | 图像 | 编码-解码 + 跳跃连接 |
-| `mixer` | 图像 | MLP-Mixer |
-| `gpt` | 语言 | 小型 GPT 解码器 |
-| `t5` | 序列 | Encoder-Decoder Transformer |
+所有三层都包含 `checkpoints/` + `best_model.pth` + `model.pth`。
 
 ---
 
-## 11. Python API
+## 11. 架构全景（31 种）
+
+查看完整家族树：
+
+```bash
+netgen archs
+```
+
+- **通用**：mlp, deep, wide, resblock, highway, moe, transformer, sae
+- **经典**：unary, linear, cnn, lstm, gru, bilstm, ae, vae, gan, multitask, contrastive, siamese
+- **中型**（≥ 10 万）：rescnn, sepcnn, densecnn, attnlstm, selfattn, gcn
+- **大型**（≥ 1000 万）：vit, unet, mixer, gpt, t5
+
+---
+
+## 12. 模型管理
+
+```bash
+# 列出所有模型及状态
+netgen list
+
+# 单个模型详情
+netgen info 001
+
+# 按准确率排名
+netgen compare --sort accuracy --top 5
+
+# 清理未训练模型（预览）
+netgen clean --untrained --dry-run
+
+# 真删
+netgen clean --untrained --force
+
+# 保留最好的 3 个
+netgen clean --keep-best 3 --force
+
+# 导出对比报告
+netgen export --format md
+```
+
+---
+
+## 13. 一键对比基准测试
+
+```bash
+# 训练所有未训练模型
+netgen benchmark --epochs 10
+
+# 自定义参数
+netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
+```
+
+输出：
+
+```
+============================================================
+  BENCHMARK: 5 models × 10 epochs
+============================================================
+
+  [1/5] 001-mlp-200x150     OK (5.1s)  accuracy=0.8912
+  [2/5] 002-lstm-32h-2l     OK (6.3s)  accuracy=0.9431
+  ...
+
+======================================================================
+  BENCHMARK RESULTS
+======================================================================
+
+Rank  Model                  Params  Metric            Time
+   1  002-lstm-32h-2l        15,618  accuracy=0.9431   6.3s
+   2  001-mlp-200x150        37,330  accuracy=0.8912   5.1s
+   ...
+
+Saved benchmark_report.md
+```
+
+---
+
+## 14. Python API
 
 ```python
 from netgen import find_candidates, gen_folder, list_architectures
 
-# 查看可用架构
-print(list_architectures())
-# 31 种
-
-# 搜索候选
+# 搜索候选架构
 candidates = find_candidates(
     lo=10000, hi=50000, count=10, seed=42,
-    arch_filter=['mlp', 'cnn', 'rescnn', 'selfattn']
+    arch_filter=['mlp', 'cnn', 'rescnn']
 )
-
-# 每个 candidate 是 (描述, 代码, 参数量, 输入维度, 输出维度, 模型类型)
-for desc, code, params, inp, outp, mtype in candidates:
-    print(f"{desc}: {params:,} params")
 
 # 生成文件夹
-gen_folder(
-    base_dir='./output',
-    index=1,
-    description=desc,
-    code=code,
-    class_name_template='M{}',
-    params=params,
-    input_dim=inp,
-    output_dim=outp,
-    model_type=mtype,
-    dataset='iris'
-)
+for i, (desc, code, params, inp, outp, mtype) in enumerate(candidates):
+    gen_folder('./output', i+1, desc, code, 'M{}',
+               params, inp, outp, mtype, dataset='iris')
 ```
 
 ---
 
-## 12. 常见问题
+## 15. 常见问题
 
-### Q: 模型太多/太少？
+**Q: 模型太少？** 放宽 `--range`，或加大 `--count`。默认最多尝试 `count × 20` 次。
 
-调节 `--count`，或放宽 `--range`。
+**Q: 训练中断如何恢复？** `python train.py --resume checkpoints/ckpt_XXXX.pth --epochs 50`
 
-### Q: 找不到合适架构？
+**Q: 复现某次生成？** 加 `--seed 42`。
 
-范围太窄或 `--arch` 筛选太苛刻。去掉 `--arch` 或扩大范围。
+**Q: `M{}` 是什么？** 类名占位符，生成时替换为 M1、M2 等。
 
-### Q: 训练报 CUDA out of memory？
+**Q: checkpoint 在哪？** 每个模型文件夹内的 `checkpoints/` 目录。
 
-生成的大模型有 DDP/AMP 支持但需要相应 GPU。小模型直接 CPU 跑。
-
-### Q: 复现结果？
-
-```bash
-python -m netgen --range 1000-5000 --count 5 --seed 42
-```
-
-### Q: `M{}` 是什么？
-
-类名占位符，生成时替换为 M1、M2 等唯一类名。
-
-### Q: 如何添加自定义架构？
-
-1. `architectures.py` 加 `make_*` 函数
-2. `search.py` 加 `_sample_*` 函数并注册到 SAMPLERS
-3. 如需新模板，在对应 tier 文件加训练代码
-
-### Q: 三层文件架构如何选择？
-
-自动的——参数量决定层级。也可以手动查看 `generator.py` → `_get_tier()` 调整阈值。
+**Q: 如何查看最佳模型？** `best_model.pth` 是训练过程中 loss 最低时自动保存的。
