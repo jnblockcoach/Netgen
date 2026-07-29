@@ -47,7 +47,7 @@ python -m netgen --range 5000000000-10000000000 --count 3
 
 | 层级 | 参数范围 | 文件数 | 能力 |
 |------|---------|:-----:|------|
-| **Quick** | < 5 万 | 8 | 基础训练 + training_log.md + data_explore.py |
+| **Quick** | < 5 万 | 8 | 基础训练 + training_log.md + data_explore.py + checkpoint & best_model |
 | **Standard** | 5 万~5000 万 | 12 | + lr 调度、早停、checkpoint、sweep、真实可视化 |
 | **Production** | > 5000 万 | 17+ | + DDP、AMP、模型子包、benchmark、profile、ONNX |
 
@@ -63,6 +63,9 @@ python -m netgen --range 5000000000-10000000000 --count 3
 ├── eval.py           # 评估
 ├── predict.py        # 推理演示
 ├── visualize.py      # 训练曲线
+├── checkpoints/      # 定时检查点（每 SAVE_EVERY epoch）
+├── best_model.pth    # 自动保存最佳模型（最低 loss）
+├── model.pth         # 最终模型（训练结束）
 ├── requirements.txt
 └── README.md         # 任务说明
 ```

@@ -47,7 +47,7 @@ Generated folders scale with parameter count:
 
 | Tier | Params | Files | Capabilities |
 |------|--------|:-----:|-------------|
-| **Quick** | < 50K | 8 | Basic training loop, `training_log.md`, `data_explore.py` |
+| **Quick** | < 50K | 8 | Basic training loop, `training_log.md`, `data_explore.py`, checkpoints & best model |
 | **Standard** | 50K ~ 50M | 12 | + lr scheduler, early stopping, checkpoints, sweep, visualize |
 | **Production** | > 50M | 17+ | + DDP, AMP, model sub-package, benchmark, profile, ONNX export |
 
@@ -63,6 +63,9 @@ Generated folders scale with parameter count:
 ├── eval.py           # Evaluation
 ├── predict.py        # Inference demo
 ├── visualize.py      # Training curve plot
+├── checkpoints/      # Periodic checkpoints (every SAVE_EVERY epochs)
+├── best_model.pth    # Auto-saved (lowest loss)
+├── model.pth         # Final model (end of training)
 ├── requirements.txt
 └── README.md         # Task-specific summary
 ```
@@ -73,8 +76,7 @@ Generated folders scale with parameter count:
 ├── sweep.py          # Grid search lr × batch_size
 ├── visualize.py      # Reads training_log.md (real data)
 ├── predict.py        # Batch inference from best_model.pth
-├── checkpoints/      # Periodic checkpoints
-└── best_model.pth    # Early-stopping best model
+└── (all Quick-tier features included: checkpoints, best_model, model.pth)
 ```
 
 ### Production Tier (adds)
