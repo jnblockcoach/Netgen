@@ -167,6 +167,7 @@ _args.add_argument('--scheduler', choices=['none','cosine','plateau','step'], he
 _args.add_argument('--patience', type=int, help='Early stopping patience')
 _args.add_argument('--grad-clip', type=float, dest='grad_clip', help='Gradient clipping max norm')
 _args.add_argument('--seed', type=int, help='Random seed')
+_args.add_argument('--resume', type=str, default=None, help='Resume from checkpoint path')
 _a = _args.parse_args()
 if _a.lr is not None: LR = _a.lr
 if _a.epochs is not None: EPOCHS = _a.epochs
@@ -421,6 +422,22 @@ def _enhance_training_display(code: str) -> str:
     code = code.replace(
         'ds=SynData()',
         'torch.manual_seed(SEED)\nds=SynData()'
+    )
+
+    # 6. Add resume-from-checkpoint support
+    resume_snippet = (
+        "start_epoch=0\n"
+        "if _a.resume is not None:\n"
+        "    ckpt=torch.load(_a.resume,weights_only=False,map_location='cpu')\n"
+        "    m.load_state_dict(ckpt['model'])\n"
+        "    o.load_state_dict(ckpt.get('opt',ckpt.get('optimizer',{})))\n"
+        "    start_epoch=ckpt.get('epoch',-1)+1\n"
+        "    print(f'Resumed from {_a.resume} (epoch {start_epoch})')\n"
+        "EPOCHS=max(EPOCHS,start_epoch+1)\n"
+    )
+    code = code.replace(
+        "for e in range(EPOCHS):",
+        resume_snippet + "for e in range(start_epoch, EPOCHS):"
     )
 
     return code
