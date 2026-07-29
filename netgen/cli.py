@@ -199,6 +199,77 @@ def _cmd_export(args):
     print(export_models(args.dir, args.format, args.output))
 
 
+# ── Subcommand: archs ──
+
+_ARCH_FAMILIES = {
+    'Classification': ['mlp', 'deep', 'wide', 'resblock', 'highway', 'moe',
+                       'transformer', 'selfattn', 'gpt', 't5', 'linear'],
+    'Image (CNN)': ['cnn', 'rescnn', 'sepcnn', 'densecnn'],
+    'Image (Modern)': ['vit', 'mixer', 'unet'],
+    'Sequence': ['lstm', 'gru', 'bilstm', 'attnlstm'],
+    'Generative': ['ae', 'sae', 'vae', 'gan'],
+    'Similarity': ['siamese', 'contrastive'],
+    'Graph': ['gcn'],
+    'Multi-Task': ['multitask'],
+    'Tiny (1-param)': ['unary'],
+}
+
+_ARCH_DESC = {
+    'mlp': '3-layer Multi-Layer Perceptron',
+    'deep': 'Deep MLP (N layers, same width)',
+    'wide': 'Wide Net (one huge hidden layer)',
+    'resblock': 'Residual blocks with skip connections',
+    'highway': 'Highway network with gated connections',
+    'moe': 'Mixture of Experts',
+    'transformer': 'Transformer encoder stack',
+    'selfattn': 'Pure self-attention (no FFN)',
+    'gpt': 'GPT-style decoder transformer',
+    't5': 'T5 encoder-decoder transformer',
+    'linear': 'Single linear layer',
+    'cnn': 'Small ConvNet (8x8 images)',
+    'rescnn': 'Multi-stage residual CNN (ResNet style)',
+    'sepcnn': 'Depthwise separable CNN (MobileNet style)',
+    'densecnn': 'Densely connected CNN (DenseNet style)',
+    'vit': 'Vision Transformer (patch embedding)',
+    'mixer': 'MLP-Mixer (token + channel mixing)',
+    'unet': 'U-Net with skip connections',
+    'lstm': 'Long Short-Term Memory',
+    'gru': 'Gated Recurrent Unit',
+    'bilstm': 'Bidirectional LSTM',
+    'attnlstm': 'LSTM + multi-head attention pooling',
+    'ae': 'Autoencoder',
+    'sae': 'Stacked Autoencoder',
+    'vae': 'Variational Autoencoder',
+    'gan': 'Generative Adversarial Network',
+    'siamese': 'Siamese pairwise similarity',
+    'contrastive': 'Contrastive learning embedding',
+    'gcn': '2-layer Graph Convolutional Network',
+    'multitask': 'Multi-task (shared trunk + heads)',
+    'unary': '1-param (a:linear-no-bias, b:weight, c:bias)',
+}
+
+
+def _cmd_archs(args):
+    if args.tree:
+        lines = ["", "Architecture Family Tree", "========================", ""]
+        for family, archs in _ARCH_FAMILIES.items():
+            lines.append(family)
+            for a in archs:
+                lines.append(f"  +-- {a:<15s}  {_ARCH_DESC.get(a, '')}")
+            lines.append("")
+        lines.append(f"Total: {len(_ARCH_DESC)} architectures")
+        print('\n'.join(lines))
+    else:
+        from .search import list_architectures
+        archs = list_architectures()
+        print(f"\n{'Architecture':<15s}  {'Description':<55s}")
+        print(f"{'-'*15}  {'-'*55}")
+        for a in archs:
+            print(f"{a:<15s}  {_ARCH_DESC.get(a, ''):<55s}")
+        print(f"\nTotal: {len(archs)} architectures")
+    return 0
+
+
 # ── Main entry ──
 
 def build_parser() -> argparse.ArgumentParser:
@@ -282,6 +353,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Output format (default: md).")
     exp.add_argument("--output", "-o", default=None, help="Output file path.")
 
+    # netgen archs
+    arch = sub.add_parser("archs", aliases=["architectures"],
+                          help="List and browse all available architectures",
+                          description="Display architecture family tree or detailed list.")
+    arch.add_argument("--tree", "-t", action="store_true", default=True,
+                      help="Show as family tree (default).")
+    arch.add_argument("--list", "-l", dest="tree", action="store_false",
+                      help="Show as flat list with descriptions.")
+
     return parser
 
 
@@ -315,6 +395,8 @@ def run(args: Optional[list[str]] = None) -> int:
         return _cmd_clean(opts) or 0
     elif opts.command in ('benchmark', 'bm'):
         return _cmd_benchmark(opts) or 0
+    elif opts.command in ('archs', 'architectures'):
+        return _cmd_archs(opts) or 0
     elif opts.command == 'export':
         return _cmd_export(opts) or 0
     else:
