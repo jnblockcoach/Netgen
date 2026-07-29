@@ -583,7 +583,7 @@ def find_candidates(lo: int, hi: int, count: int, seed: int = 42,
                     arch_filter: Optional[List[str]] = None,
                     fixed_input: Optional[int] = None,
                     fixed_output: Optional[int] = None,
-                    max_attempts: int = 3000) -> List[Candidate]:
+                    max_attempts: int = 5000) -> List[Candidate]:
     """Find architecture candidates within [lo, hi] parameter range.
 
     Args:
@@ -594,7 +594,7 @@ def find_candidates(lo: int, hi: int, count: int, seed: int = 42,
         arch_filter: If provided, only sample from these architecture keys.
         fixed_input: If set, force all candidates to use this input dimension.
         fixed_output: If set, force all candidates to use this output dimension.
-        max_attempts: Maximum sampling attempts.
+        max_attempts: Base sampling attempts, scaled by count if needed.
 
     Returns:
         List of Candidate tuples sorted by parameter count.
@@ -607,7 +607,11 @@ def find_candidates(lo: int, hi: int, count: int, seed: int = 42,
     if not pool:
         raise ValueError(f"No valid architectures. Available: {list(SAMPLERS.keys())}")
 
-    for _ in range(max_attempts):
+    # Scale attempts: ensure we try enough to fill the requested count.
+    # Typical hit rate is ~10-30%, so multiply count by 10 as a safe margin.
+    needed_attempts = max(max_attempts, count * 20)
+
+    for _ in range(needed_attempts):
         if len(results) >= count:
             break
 
