@@ -1,0 +1,48 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Generated models (output directory)
+generated_models/
+
+# Training artifacts
+*.pth
+*.pt
+*.onnx
+checkpoints/
+logs/
+training_log.md
+training_curve.png
+sweep_results.txt
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
