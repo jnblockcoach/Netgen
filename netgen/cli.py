@@ -39,6 +39,14 @@ _TASK_ARCHS = {
     'regression':    ['linear', 'mlp', 'deep', 'wide', 'resblock'],
 }
 
+_PRESETS = {
+    'cv':    ['cnn', 'rescnn', 'sepcnn', 'densecnn', 'vit', 'unet', 'mixer'],
+    'nlp':   ['lstm', 'gru', 'bilstm', 'attnlstm', 'transformer', 'selfattn', 'gpt', 't5'],
+    'gen':   ['ae', 'sae', 'vae', 'gan'],
+    'light': ['unary', 'linear', 'mlp'],
+    'all':   None,  # None = use all architectures
+}
+
 
 # ── Helpers ──
 
@@ -56,19 +64,33 @@ def _parse_range(range_str: str) -> tuple[int, int]:
 
 
 def _resolve_arch_filter(opts, dataset: str) -> Optional[list[str]]:
-    """Resolve architecture filter from --arch and dataset compatibility."""
+    """Resolve architecture filter from --arch or --preset, plus dataset compatibility."""
     arch_filter = None
+
+    # --preset takes priority
+    if hasattr(opts, 'preset') and opts.preset and opts.preset != 'all':
+        if opts.preset not in _PRESETS:
+            print(f"Error: Unknown preset '{opts.preset}'. Choose: {list(_PRESETS.keys())}", file=sys.stderr)
+            return None
+        arch_filter = list(_PRESETS[opts.preset])
+
+    # --arch refines further (if preset also set, intersect)
     if opts.arch:
-        arch_filter = [a.strip() for a in opts.arch.split(",") if a.strip()]
+        user_archs = [a.strip() for a in opts.arch.split(",") if a.strip()]
         valid = list_architectures()
-        invalid = [a for a in arch_filter if a not in valid]
+        invalid = [a for a in user_archs if a not in valid]
         if invalid:
             print(f"Warning: Unknown architectures ignored: {invalid}", file=sys.stderr)
-            arch_filter = [a for a in arch_filter if a in valid]
+        user_archs = [a for a in user_archs if a in valid]
+        if arch_filter:
+            arch_filter = [a for a in arch_filter if a in user_archs]
+        else:
+            arch_filter = user_archs
         if not arch_filter:
-            print("Error: No valid architectures after filtering.", file=sys.stderr)
+            print("Error: No architectures match both --preset and --arch.", file=sys.stderr)
             return None
 
+    # Dataset compatibility filter
     if dataset != 'syn' and dataset in _DATASET_TASK:
         task = _DATASET_TASK[dataset]
         compat = _TASK_ARCHS.get(task, [])
@@ -190,6 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--seed", type=int, default=42, help="Random seed (default: 42).")
     gen.add_argument("--dataset", default="syn", help="Dataset name (default: syn).")
     gen.add_argument("--arch", default=None, help="Architecture filter, e.g. 'mlp,cnn,lstm'.")
+    gen.add_argument("--preset", "-p", default=None,
+                     choices=['cv', 'nlp', 'gen', 'light', 'all'],
+                     help="Preset filter: cv, nlp, gen, light, all.")
 
     # netgen list
     lst = sub.add_parser("list", aliases=["ls"],
