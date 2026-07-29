@@ -7,7 +7,8 @@ from typing import Optional
 from .search import find_candidates, list_architectures
 from .generator import gen_folder
 from .manager import (
-    list_models, info_model, compare_models, clean_models, export_models
+    list_models, info_model, compare_models, clean_models, export_models,
+    benchmark_models
 )
 
 
@@ -157,6 +158,12 @@ def _cmd_clean(args):
     print(clean_models(args.dir, args.keep_best, args.status, args.untrained, args.dry_run))
 
 
+# ── Subcommand: benchmark ──
+
+def _cmd_benchmark(args):
+    print(benchmark_models(args.dir, args.epochs, args.lr, args.batch_size, args.seed))
+
+
 # ── Subcommand: export ──
 
 def _cmd_export(args):
@@ -223,6 +230,16 @@ def build_parser() -> argparse.ArgumentParser:
     cln.add_argument("--untrained", action="store_true",
                      help="Remove all untrained models.")
 
+    # netgen benchmark
+    bm = sub.add_parser("benchmark", aliases=["bm"],
+                         help="Train all models and rank by performance",
+                         description="Train all untrained models with the same settings, then rank by best metric.")
+    bm.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
+    bm.add_argument("--epochs", "-e", type=int, default=10, help="Training epochs per model (default: 10).")
+    bm.add_argument("--lr", type=float, default=None, help="Learning rate (uses config default if not set).")
+    bm.add_argument("--batch-size", type=int, dest="batch_size", default=None, help="Batch size.")
+    bm.add_argument("--seed", type=int, default=42, help="Random seed.")
+
     # netgen export
     exp = sub.add_parser("export", help="Export model comparison report",
                          description="Export model metadata and metrics to a file.")
@@ -262,6 +279,8 @@ def run(args: Optional[list[str]] = None) -> int:
         return _cmd_compare(opts) or 0
     elif opts.command in ('clean', 'rm'):
         return _cmd_clean(opts) or 0
+    elif opts.command in ('benchmark', 'bm'):
+        return _cmd_benchmark(opts) or 0
     elif opts.command == 'export':
         return _cmd_export(opts) or 0
     else:
