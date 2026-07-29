@@ -156,15 +156,29 @@ _ARGPARSE_TRAIN = """
 import argparse
 from config import *
 _args = argparse.ArgumentParser()
-_args.add_argument('--lr', type=float)
-_args.add_argument('--epochs', type=int)
-_args.add_argument('--batch-size', type=int, dest='batch_size')
-_args.add_argument('--save-every', type=int, dest='save_every')
+_args.add_argument('--lr', type=float, help='Learning rate')
+_args.add_argument('--epochs', type=int, help='Number of training epochs')
+_args.add_argument('--batch-size', type=int, dest='batch_size', help='Batch size')
+_args.add_argument('--save-every', type=int, dest='save_every', help='Checkpoint interval (epochs)')
+_args.add_argument('--optimizer', choices=['adam','sgd','adamw'], help='Optimizer')
+_args.add_argument('--weight-decay', type=float, dest='weight_decay', help='L2 regularization')
+_args.add_argument('--momentum', type=float, help='Momentum (for SGD)')
+_args.add_argument('--scheduler', choices=['none','cosine','plateau','step'], help='LR scheduler')
+_args.add_argument('--patience', type=int, help='Early stopping patience')
+_args.add_argument('--grad-clip', type=float, dest='grad_clip', help='Gradient clipping max norm')
+_args.add_argument('--seed', type=int, help='Random seed')
 _a = _args.parse_args()
 if _a.lr is not None: LR = _a.lr
 if _a.epochs is not None: EPOCHS = _a.epochs
 if _a.batch_size is not None: BATCH_SIZE = _a.batch_size
 if _a.save_every is not None: SAVE_EVERY = _a.save_every
+if _a.optimizer is not None: OPTIMIZER = _a.optimizer
+if _a.weight_decay is not None: WEIGHT_DECAY = _a.weight_decay
+if _a.momentum is not None: MOMENTUM = _a.momentum
+if _a.scheduler is not None: SCHEDULER = _a.scheduler
+if _a.patience is not None: PATIENCE = _a.patience
+if _a.grad_clip is not None: GRAD_CLIP = _a.grad_clip
+if _a.seed is not None: SEED = _a.seed
 """
 
 # ── File I/O ──
@@ -221,6 +235,13 @@ def gen_config(input_dim: int, output_dim: int,
         f"EPOCHS = 30                  # training epochs\n"
         f"BATCH_SIZE = 64              # batch size\n"
         f"SAVE_EVERY = 10              # checkpoint interval (epochs)\n"
+        f"OPTIMIZER = 'adam'           # adam | sgd | adamw\n"
+        f"WEIGHT_DECAY = 0.0           # L2 regularization\n"
+        f"MOMENTUM = 0.9               # momentum (for SGD)\n"
+        f"SCHEDULER = 'none'           # none | cosine | plateau | step\n"
+        f"PATIENCE = 10                # early stopping patience\n"
+        f"GRAD_CLIP = 1.0              # gradient clipping max norm\n"
+        f"SEED = 42                    # random seed\n"
         f"LOSS_TYPE = '{loss_type}'    # loss function variant\n"
     )
 
@@ -342,6 +363,45 @@ def _enhance_training_display(code: str) -> str:
     code = code.replace(
         "print(f'Model: {total_params} parameters')",
         "print(f'Model: {total_params} parameters | Epochs: {EPOCHS} | Batch: {BATCH_SIZE}\\n')"
+    )
+
+    # 5. Replace hardcoded optimizer with config-driven
+    code = code.replace(
+        "o=torch.optim.Adam(m.parameters(),lr=LR)",
+        (
+            "if OPTIMIZER=='sgd':\n"
+            "    o=torch.optim.SGD(m.parameters(),lr=LR,momentum=MOMENTUM,weight_decay=WEIGHT_DECAY)\n"
+            "elif OPTIMIZER=='adamw':\n"
+            "    o=torch.optim.AdamW(m.parameters(),lr=LR,weight_decay=WEIGHT_DECAY)\n"
+            "else:\n"
+            "    o=torch.optim.Adam(m.parameters(),lr=LR,weight_decay=WEIGHT_DECAY)"
+        )
+    )
+    # Replace scheduler placeholder (Standard tier already has scheduler, Quick doesn't)
+    code = code.replace(
+        "scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(o,mode='min',patience=5,factor=0.5)",
+        (
+            "if SCHEDULER=='cosine':\n"
+            "    scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(o,T_max=EPOCHS)\n"
+            "elif SCHEDULER=='step':\n"
+            "    scheduler=torch.optim.lr_scheduler.StepLR(o,step_size=max(1,EPOCHS//3),gamma=0.5)\n"
+            "elif SCHEDULER=='plateau':\n"
+            "    scheduler=torch.optim.lr_scheduler.ReduceLROnPlateau(o,mode='min',patience=max(1,PATIENCE//2),factor=0.5)\n"
+            "else:\n"
+            "    scheduler=None"
+        )
+    )
+    # Replace hardcoded patience with config value
+    code = code.replace('PATIENCE=10', 'PATIENCE=PATIENCE')
+    # Replace hardcoded grad clip
+    code = code.replace(
+        "nn.utils.clip_grad_norm_(m.parameters(),1.0)",
+        "nn.utils.clip_grad_norm_(m.parameters(),GRAD_CLIP)"
+    )
+    # Add seed setting at the top
+    code = code.replace(
+        'ds=SynData()',
+        'torch.manual_seed(SEED)\nds=SynData()'
     )
 
     return code
