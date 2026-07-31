@@ -21,7 +21,6 @@ for e, loss, acc in history:
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
-print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_REG = """
@@ -38,7 +37,6 @@ for e, loss in history:
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
-print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_AE = """
@@ -55,7 +53,6 @@ for e, loss in history:
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
-print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_GAN = """
@@ -72,7 +69,6 @@ for e, dl, gl in history:
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
-print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 _FOOTER_MT = """
@@ -89,7 +85,6 @@ for e, loss, a1, a2 in history:
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
-print(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
 """
 
 
@@ -367,6 +362,8 @@ def get_templates(model_type):
                  "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
                  "m={cn}();total_params=sum(p.numel() for p in m.parameters())\n"
                  "print(f'Model: {total_params} parameters')\n"
+                 "os.makedirs('checkpoints',exist_ok=True)\n"
+                 "best_loss=float('inf')\n"
                  "og=torch.optim.Adam(m.generator.parameters(),lr=LR)\n"
                  "od=torch.optim.Adam(m.discriminator.parameters(),lr=LR)\n"
                  "history=[]\n"

@@ -6,12 +6,11 @@ Usage:
 import sys
 import os
 
-# The project dir *is* the package dir, so add it to sys.path
+# Ensure the project root is on sys.path so the netgen package is importable
 _pkg_dir = os.path.dirname(os.path.abspath(__file__))
 if _pkg_dir not in sys.path:
     sys.path.insert(0, _pkg_dir)
 
-# Now we can import netgen modules directly
-from cli import run
+from netgen.cli import run
 
 sys.exit(run())
