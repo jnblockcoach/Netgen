@@ -36,9 +36,12 @@ netgen archs    [--tree|--list]
 | `--dataset` | `syn` | Dataset name |
 | `--seed` | 42 | Random seed |
 | `--jobs` `-j` | 1 | Parallel workers |
+| `--device` | cuda,mps | Training device priority, e.g. `cuda,mps`. `cpu` is always the final fallback (may be omitted: `cuda,cpu` == `cuda`) |
 
 ```bash
 netgen generate --range 10000-20000 --count 20
+netgen generate --device cuda,mps --range 10000-20000 --count 20
+netgen generate --device cpu --range 10000-20000 --count 20   # CPU only
 netgen generate --preset cv --range 5000-50000 --count 10
 netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
 netgen generate --range 5000000000-10000000000 --count 3
@@ -211,8 +214,12 @@ candidates = find_candidates(lo=10000, hi=20000, count=10, seed=42,
 
 for desc, code, params, inp, outp, mtype in candidates:
     gen_folder('./output', 1, desc, code, 'M{}', params, inp, outp, mtype,
-               dataset='iris')
+               dataset='iris', device_priority=['cuda', 'mps'])
 ```
+
+`device_priority` (list) is written into the generated `config.py` as
+`DEVICE_PRIORITY`; each script resolves `DEVICE` at import time by taking the
+first available device in that order, with `cpu` always as the final fallback.
 
 ## Requirements
 

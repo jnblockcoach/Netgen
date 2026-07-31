@@ -4,6 +4,7 @@ Each model type gets customized files — different architectures have different
 training objectives, metrics, and data handling.
 """
 import os
+import re
 from typing import Optional, Dict
 
 from .templates import get_templates, get_extra_files
@@ -221,8 +222,13 @@ def _rewrite_model_dims(code: str, old_in: int, old_out: int,
 
 def gen_config(input_dim: int, output_dim: int,
                loss_type: str = "ce", dataset: str = "syn",
-               model_type: str = "ce") -> str:
-    """Generate config.py with clear comments and architecture-specific params."""
+               model_type: str = "ce",
+               device_priority: Optional[list] = None) -> str:
+    """Generate config.py with clear comments and architecture-specific params.
+
+    device_priority: training device preference order, e.g. ['cuda', 'mps'].
+        'cpu' is ALWAYS the final fallback — it need not be listed.
+    """
     dataset_info = _get_dataset_info(dataset)
     base = (
         f"# ===========================================\n"
@@ -263,7 +269,38 @@ def gen_config(input_dim: int, output_dim: int,
     elif model_type in ('ce', 'cnn', 'rnn', 'mt'):
         extra = "LABEL_SMOOTHING = 0.0       # label smoothing (classification)\n"
 
-    return base + extra
+    return base + extra + _gen_device_block(device_priority)
+
+
+def _gen_device_block(device_priority: Optional[list]) -> str:
+    """Generate the DEVICE_PRIORITY + DEVICE resolution block for config.py.
+
+    DEVICE_PRIORITY lists devices in preference order; 'cpu' is always
+    appended as the final fallback. DEVICE is resolved at import time so
+    every script (train/eval/predict/sweep) picks the same device.
+    """
+    priority = device_priority or ['cuda', 'mps']
+    if 'cpu' not in priority:
+        priority = priority + ['cpu']
+    return (
+        f"\n"
+        f"# ---------- Device ----------\n"
+        f"# Training device priority (order = preference).\n"
+        f"# 'cpu' is ALWAYS the final fallback, so it may be omitted from the list.\n"
+        f"# e.g. ['cuda', 'mps'] -> use CUDA if available, else MPS, else CPU.\n"
+        f"DEVICE_PRIORITY = {list(priority)}\n"
+        f"\n"
+        f"import torch\n"
+        f"_device = None\n"
+        f"for _d in DEVICE_PRIORITY:\n"
+        f"    if _d == 'cuda' and torch.cuda.is_available():\n"
+        f"        _device = torch.device('cuda'); break\n"
+        f"    if _d == 'mps' and getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():\n"
+        f"        _device = torch.device('mps'); break\n"
+        f"    if _d == 'cpu':\n"
+        f"        _device = torch.device('cpu'); break\n"
+        f"DEVICE = _device if _device is not None else torch.device('cpu')\n"
+    )
 
 
 def _get_dataset_info(dataset: str) -> str:
@@ -297,18 +334,111 @@ def gen_enhanced_train(tier: str, model_type: str, class_name: str) -> str:
     # Post-process: enhance training display with progress bar + epoch counter
     train_code = _enhance_training_display(train_code)
 
+    # Move model & data to the configured DEVICE (from config DEVICE_PRIORITY)
+    train_code = _inject_device_support(train_code)
+
     return train_code
+
+
+_DEV_HELPER = (
+    "# ── Device helper: move each batch to the configured DEVICE ──\n"
+    "def _dev(batch):\n"
+    "    if isinstance(batch, (tuple, list)):\n"
+    "        return tuple(b.to(DEVICE) if torch.is_tensor(b) else b for b in batch)\n"
+    "    return batch.to(DEVICE)\n"
+)
+
+
+def _inject_device_support(code: str) -> str:
+    """Rewrite training code so model & data move to the configured DEVICE.
+
+    Runs AFTER _enhance_training_display (loops are already enumerate()-based).
+    Data loaders are wrapped with the _dev helper; generator expressions used
+    for validation use map(_dev, lo). Returns code unchanged where no pattern
+    matches (e.g. production tier already handles DEVICE explicitly).
+    """
+    # 1. Move model to DEVICE: m=M1();total_params → m=M1().to(DEVICE);total_params
+    code = re.sub(r'\bm=(\w+)\(\);total_params', r'm=\1().to(DEVICE);total_params', code)
+
+    # 2. Move every data batch to DEVICE (training & validation loops)
+    code = code.replace('for i,(x,y) in enumerate(lo):',
+                        'for i,(x,y) in enumerate(map(_dev, lo)):')
+    code = code.replace('for i,(x1,x2) in enumerate(lo):',
+                        'for i,(x1,x2) in enumerate(map(_dev, lo)):')
+    code = code.replace('for i,(x1,x2,y) in enumerate(lo):',
+                        'for i,(x1,x2,y) in enumerate(map(_dev, lo)):')
+    code = code.replace('for i,(x,y1,y2) in enumerate(lo):',
+                        'for i,(x,y1,y2) in enumerate(map(_dev, lo)):')
+    code = code.replace('for i,x in enumerate(lo):',
+                        'for i,x in enumerate(map(_dev, lo)):')
+    code = code.replace('for i,real in enumerate(lo):',
+                        'for i,real in enumerate(map(_dev, lo)):')
+    # Validation generator expressions: sum(... for x,y in lo)
+    code = code.replace('for x,y in lo)', 'for x,y in map(_dev, lo))')
+    code = code.replace('for x in lo)', 'for x in map(_dev, lo))')
+
+    # 3. GAN noise must be created on DEVICE
+    code = code.replace('z=torch.randn(real.size(0),INPUT_DIM)',
+                        'z=torch.randn(real.size(0),INPUT_DIM,device=DEVICE)')
+
+    # 4. Contrastive: boolean mask must live on the same device as s
+    code = code.replace('mask=torch.eye(len(h),dtype=torch.bool)',
+                        'mask=torch.eye(len(h),dtype=torch.bool).to(DEVICE)')
+
+    # 5. GCN: graph tensors must live on DEVICE
+    code = code.replace('X=torch.stack([ds[i][0] for i in range(len(ds))])',
+                        'X=torch.stack([ds[i][0] for i in range(len(ds))]).to(DEVICE)')
+    code = code.replace('y=torch.tensor([ds[i][1] for i in range(len(ds))])',
+                        'y=torch.tensor([ds[i][1] for i in range(len(ds))]).to(DEVICE)')
+    code = code.replace('adj=build_adj(len(ds),ds.edges)',
+                        'adj=build_adj(len(ds),ds.edges).to(DEVICE)')
+
+    # 6. Insert the _dev helper after the data import
+    code = code.replace('from data import SynData\n',
+                        'from data import SynData\n' + _DEV_HELPER)
+    return code
+
+
+def _inject_device_support_eval(code: str) -> str:
+    """Rewrite eval code so the model & inputs use the configured DEVICE."""
+    # 1. Model to DEVICE: m=M1();m.load_state_dict(...) → m=M1().to(DEVICE);...
+    code = re.sub(r'\bm=(\w+)\(\);m\.load_state_dict',
+                  r'm=\1().to(DEVICE);m.load_state_dict', code)
+
+    # 2. Inputs to DEVICE
+    code = code.replace('torch.from_numpy(X)', 'torch.from_numpy(X).to(DEVICE)')
+    code = code.replace('torch.from_numpy(img.reshape(1,INPUT_DIM,8,8).astype(np.float32))',
+                        'torch.from_numpy(img.reshape(1,INPUT_DIM,8,8).astype(np.float32)).to(DEVICE)')
+    code = code.replace('torch.from_numpy(t)', 'torch.from_numpy(t).to(DEVICE)')
+    code = code.replace('z=torch.randn(10,INPUT_DIM)', 'z=torch.randn(10,INPUT_DIM,device=DEVICE)')
+    code = code.replace('x=torch.randn(10,INPUT_DIM)', 'x=torch.randn(10,INPUT_DIM,device=DEVICE)')
+    code = code.replace('x1=torch.randn(5,INPUT_DIM)', 'x1=torch.randn(5,INPUT_DIM,device=DEVICE)')
+
+    # 3. Outputs back to CPU before .numpy()
+    code = code.replace('.argmax(1).numpy()', '.argmax(1).cpu().numpy()')
+    code = code.replace(').numpy()', ').cpu().numpy()')
+    code = code.replace('r.numpy()', 'r.cpu().numpy()')
+
+    # 4. GCN graph tensors
+    code = code.replace('X=torch.stack([ds[i][0] for i in range(len(ds))])',
+                        'X=torch.stack([ds[i][0] for i in range(len(ds))]).to(DEVICE)')
+    code = code.replace('y=torch.tensor([ds[i][1] for i in range(len(ds))])',
+                        'y=torch.tensor([ds[i][1] for i in range(len(ds))]).to(DEVICE)')
+    code = code.replace('adj=build_adj(len(ds),ds.edges)',
+                        'adj=build_adj(len(ds),ds.edges).to(DEVICE)')
+    return code
 
 
 def _enhance_training_display(code: str) -> str:
     """Inject progress bar and improved formatting into training loop."""
     import re
 
-    # 1. Add total_batches before epoch loop
-    code = code.replace(
-        'for e in range(EPOCHS):',
-        'total_batches=len(lo)\nfor e in range(EPOCHS):'
-    )
+    # 1. Add total_batches before epoch loop (skip GCN: no DataLoader/lo)
+    if 'DataLoader' in code:
+        code = code.replace(
+            'for e in range(EPOCHS):',
+            'total_batches=len(lo)\nfor e in range(EPOCHS):'
+        )
 
     # 2. Convert 'for x,y in lo:' to 'for i,(x,y) in enumerate(lo):'
     #    and add progress bar update after o.step()
@@ -339,18 +469,20 @@ def _enhance_training_display(code: str) -> str:
         code
     )
 
-    # Insert progress bar after o.step() (or od.step() for GAN)
-    code = re.sub(
-        r'(\bo\.step\(\))',
-        r'\1\n' + progress_snippet.replace('\\', '\\\\'),
-        code
-    )
-    # GAN: od.step() and og.step() — add progress after od.step()
-    code = re.sub(
-        r'(\bod\.step\(\))',
-        r'\1\n' + progress_snippet.replace('\\', '\\\\'),
-        code
-    )
+    # Insert progress bar after o.step() (or od.step() for GAN).
+    # Only for DataLoader loops (skip GCN: no per-batch loop, no i)
+    if 'enumerate(lo)' in code:
+        code = re.sub(
+            r'(\bo\.step\(\))',
+            r'\1\n' + progress_snippet.replace('\\', '\\\\'),
+            code
+        )
+        # GAN: od.step() and og.step() — add progress after od.step()
+        code = re.sub(
+            r'(\bod\.step\(\))',
+            r'\1\n' + progress_snippet.replace('\\', '\\\\'),
+            code
+        )
 
     # 3. Improve epoch print format (overwrite progress bar with \r)
     code = re.sub(
@@ -451,34 +583,43 @@ def gen_predict(class_name: str, input_dim: int, model_type: str) -> str:
         body = (
             "img = np.zeros((8, 8), dtype=np.float32)\n"
             "img[3:5, :] = 1.0\n"
-            f"x = torch.from_numpy(img.reshape(1, {input_dim}, 8, 8).astype(np.float32))\n"
+            f"x = torch.from_numpy(img.reshape(1, {input_dim}, 8, 8).astype(np.float32)).to(DEVICE)\n"
             "if INPUT_DIM == 3: x = x.repeat(1, 3, 1, 1)\n"
             "print(f'Input shape: {x.shape}')"
         )
     elif model_type == 'rnn':
         body = (
-            "x = torch.randn(1, 15, 1)\n"
+            "x = torch.randn(1, 15, 1, device=DEVICE)\n"
             "print(f'Input shape: {x.shape}')"
         )
     elif model_type == 'gan':
         body = (
-            f"z = torch.randn(1, {input_dim})\n"
-            "print(f'Latent z shape: {z.shape}')"
+            f"z = torch.randn(1, {input_dim}, device=DEVICE)\n"
+            "print(f'Latent z shape: {z.shape}')\n"
+            "x = z\n"
+        )
+    elif model_type == 'gcn':
+        body = (
+            f"x = torch.randn(10, {input_dim}, device=DEVICE)\n"
+            "adj = torch.eye(10, device=DEVICE)\n"
+            "print(f'Input shape: {x.shape}, adj: {adj.shape}')"
         )
     else:
-        body = f"x = torch.randn(1, {input_dim})\nprint(f'Input shape: {{x.shape}}')"
+        body = f"x = torch.randn(1, {input_dim}, device=DEVICE)\nprint(f'Input shape: {{x.shape}}')"
+
+    call = 'model(x, adj)' if model_type == 'gcn' else 'model(x)'
 
     return (
         "import torch\n"
         "import numpy as np\n"
         f"from model import {class_name}\n"
-        f"from config import INPUT_DIM, OUTPUT_DIM\n\n"
-        f"model = {class_name}()\n"
+        f"from config import *\n\n"
+        f"model = {class_name}().to(DEVICE)\n"
         f"model.load_state_dict(torch.load('model.pth', weights_only=True))\n"
         f"model.eval()\n\n"
         + body +
-        "\n\nwith torch.no_grad():\n"
-        "    out = model(x)\n"
+        f"\n\nwith torch.no_grad():\n"
+        f"    out = {call}\n"
         "    if isinstance(out, tuple): out = out[0]\n"
         "    if out.numel() == 1:\n"
         "        print(f'Prediction: {out.item():.4f}')\n"
@@ -684,7 +825,8 @@ def gen_readme(description: str, params: int, model_type: str,
 
 def gen_folder(base_dir: str, index: int, description: str, code: str,
                class_name_template: str, params: int, input_dim: int,
-               output_dim: int, model_type: str, dataset: str = "syn") -> str:
+               output_dim: int, model_type: str, dataset: str = "syn",
+               device_priority: Optional[list] = None) -> str:
     """Generate a single model folder with tier-appropriate files.
 
     Tier is determined by param count:
@@ -723,7 +865,8 @@ def gen_folder(base_dir: str, index: int, description: str, code: str,
 
     # --- config.py (after dims are final) ---
     write_file(os.path.join(folder, "config.py"),
-               gen_config(input_dim, output_dim, loss_type, dataset, model_type))
+               gen_config(input_dim, output_dim, loss_type, dataset, model_type,
+                          device_priority))
 
     # --- model.py ---
     write_file(os.path.join(folder, "model.py"),
@@ -743,6 +886,7 @@ def gen_folder(base_dir: str, index: int, description: str, code: str,
     _, _, raw_eval_code = get_templates(tier, model_type)
     eval_code = raw_eval_code.replace('{cn}', class_name).replace(
         "torch.load('model.pth')", "torch.load('model.pth', weights_only=True)")
+    eval_code = _inject_device_support_eval(eval_code)
     write_file(os.path.join(folder, "eval.py"), eval_code)
 
     # --- data_explore.py ---

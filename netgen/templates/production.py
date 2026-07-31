@@ -45,7 +45,8 @@ def _build_train(model_type: str) -> str:
         '    DEVICE=torch.device(f"cuda:{LOCAL_RANK}")\n'
         '    IS_MAIN=(LOCAL_RANK==0)\n'
         'else:\n'
-        '    DEVICE=torch.device("cuda" if torch.cuda.is_available() else "cpu")\n'
+        '    # DEVICE already resolved from config DEVICE_PRIORITY (cuda/mps/cpu priority list)\n'
+        '    DEVICE=DEVICE\n'
         '    IS_MAIN=True\n\n'
     )
 

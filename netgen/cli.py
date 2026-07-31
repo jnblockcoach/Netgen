@@ -63,6 +63,25 @@ def _parse_range(range_str: str) -> tuple[int, int]:
     return lo, hi
 
 
+_VALID_DEVICES = ('cuda', 'mps', 'cpu')
+
+
+def _parse_device(device_str: Optional[str]) -> list[str]:
+    """Parse --device 'cuda,mps' into a priority list.
+
+    'cpu' is ALWAYS the final fallback, so it may be omitted from the list
+    (e.g. 'cuda,cpu' == 'cuda'). Empty -> default ['cuda', 'mps'].
+    """
+    if not device_str:
+        return ['cuda', 'mps']
+    devices = [d.strip().lower() for d in device_str.split(',') if d.strip()]
+    for d in devices:
+        if d not in _VALID_DEVICES:
+            raise ValueError(
+                f"Invalid device '{d}'. Supported: {', '.join(_VALID_DEVICES)}.")
+    return devices
+
+
 def _resolve_arch_filter(opts, dataset: str) -> Optional[list[str]]:
     """Resolve architecture filter from --arch or --preset, plus dataset compatibility."""
     arch_filter = None
@@ -117,12 +136,19 @@ def _cmd_generate(args):
     if arch_filter is None and args.arch:
         return 1
 
+    try:
+        device_priority = _parse_device(args.device)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     output_dir = os.path.abspath(args.output)
 
     print(f"\nNetGen - Generating {args.count} models in range {lo:,}-{hi:,}")
     if arch_filter:
         print(f"Architectures: {', '.join(arch_filter)}")
     print(f"Dataset: {args.dataset}")
+    print(f"Device priority: {', '.join(device_priority)} (cpu is always the final fallback)")
     print(f"Output: {output_dir}\n")
 
     candidates = find_candidates(lo, hi, args.count, args.seed, arch_filter)
@@ -138,7 +164,8 @@ def _cmd_generate(args):
 
     generated = 0
     tasks = [
-        (output_dir, i + 1, desc, code, "M{}", params, input_dim, output_dim, model_type, args.dataset)
+        (output_dir, i + 1, desc, code, "M{}", params, input_dim, output_dim,
+         model_type, args.dataset, device_priority)
         for i, (desc, code, params, input_dim, output_dim, model_type) in enumerate(candidates[:args.count])
     ]
 
@@ -295,6 +322,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Preset filter: cv, nlp, gen, light, all.")
     gen.add_argument("--jobs", "-j", type=int, default=1,
                      help="Parallel workers for generation (default: 1).")
+    gen.add_argument("--device", default=None,
+                     help="Training device priority, e.g. 'cuda,mps' (default: cuda,mps). "
+                          "'cpu' is always the final fallback and may be omitted, "
+                          "e.g. 'cuda,cpu' == 'cuda'. Supported: cuda, mps, cpu.")
 
     # netgen list
     lst = sub.add_parser("list", aliases=["ls"],

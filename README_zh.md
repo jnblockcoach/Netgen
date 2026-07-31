@@ -35,9 +35,12 @@ netgen archs    [--tree|--list]
 | `--dataset` | `syn` | 数据集名称 |
 | `--seed` | 42 | 随机种子 |
 | `--jobs` `-j` | 1 | 并行进程数 |
+| `--device` | cuda,mps | 训练设备优先级，如 `cuda,mps`。`cpu` 永远是最后兜底（可省略：`cuda,cpu` == `cuda`） |
 
 ```bash
 netgen generate --range 10000-20000 --count 20
+netgen generate --device cuda,mps --range 10000-20000 --count 20
+netgen generate --device cpu --range 10000-20000 --count 20   # 只用 CPU
 netgen generate --preset cv --range 5000-50000 --count 10
 netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
 ```

@@ -385,7 +385,7 @@ def get_extra_files(model_type: str, class_name: str) -> dict:
     return {
         'sweep.py': _gen_sweep(class_name),
         'visualize.py': _gen_visualize_std(),
-        'predict.py': _gen_predict_std(class_name),
+        'predict.py': _gen_predict_std(class_name, model_type),
     }
 
 
@@ -403,15 +403,20 @@ def _gen_sweep(class_name: str) -> str:
         'results = []\n\n'
         'for lr, bs in itertools.product(lrs, batch_sizes):\n'
         '    lo = torch.utils.data.DataLoader(ds, bs, shuffle=True)\n'
-        f'    m = {class_name}()\n'
+        f'    m = {class_name}().to(DEVICE)\n'
         '    o = torch.optim.Adam(m.parameters(), lr=lr)\n'
         '    criterion = nn.CrossEntropyLoss()\n'
         '    for e in range(epochs):\n'
         '        for x, y in lo:\n'
+        '            x, y = x.to(DEVICE), y.to(DEVICE)\n'
         '            l = criterion(m(x), y)\n'
         '            o.zero_grad(); l.backward(); o.step()\n'
         '    with torch.no_grad():\n'
-        '        loss = sum(criterion(m(x), y).item() * x.size(0) for x, y in lo) / len(ds)\n'
+        '        losses = []\n'
+        '        for x, y in lo:\n'
+        '            x, y = x.to(DEVICE), y.to(DEVICE)\n'
+        '            losses.append(criterion(m(x), y).item() * x.size(0))\n'
+        '        loss = sum(losses) / len(ds)\n'
         '    results.append((lr, bs, loss))\n'
         '    print(f"lr={lr:.4f}, bs={bs:3d} => loss={loss:.4f}")\n\n'
         'best = min(results, key=lambda r: r[2])\n'
@@ -465,20 +470,27 @@ def _gen_visualize_std() -> str:
     )
 
 
-def _gen_predict_std(class_name: str) -> str:
+def _gen_predict_std(class_name: str, model_type: str = 'ce') -> str:
+    if model_type == 'gcn':
+        batch_setup = ('x = torch.randn(10, INPUT_DIM, device=DEVICE)\n'
+                       'adj = torch.eye(10, device=DEVICE)\n')
+        call = 'm(x, adj)'
+    else:
+        batch_setup = 'x = torch.randn(10, INPUT_DIM, device=DEVICE)\n'
+        call = 'm(x)'
     return (
         '"""Batch inference demo."""\n'
         'import torch\n'
         'import numpy as np\n'
         f'from model import {class_name}\n'
         'from config import INPUT_DIM, OUTPUT_DIM\n\n'
-        f'm = {class_name}()\n'
+        f'm = {class_name}().to(DEVICE)\n'
         "m.load_state_dict(torch.load('best_model.pth', weights_only=True))\n"
         'm.eval()\n\n'
         '# Batch inference on 10 random samples\n'
-        'x = torch.randn(10, INPUT_DIM)\n'
+        + batch_setup +
         'with torch.no_grad():\n'
-        '    out = m(x)\n'
+        f'    out = {call}\n'
         '    if isinstance(out, tuple):\n'
         '        out = out[0]\n'
         '    if out.shape[1] == 1:\n'
