@@ -15,6 +15,19 @@ def count_params(module: nn.Module) -> int:
     return sum(p.numel() for p in module.parameters())
 
 
+def _safe_nheads(dim: int, approx: int) -> int:
+    """Largest head count <= approx that divides dim.
+
+    nn.MultiheadAttention requires embed_dim % num_heads == 0; samplers
+    compute an approximation (dim // 64) that may not divide, so we walk
+    down to the nearest divisor.
+    """
+    approx = max(1, approx)
+    while approx > 1 and dim % approx != 0:
+        approx -= 1
+    return approx
+
+
 # ── Linear ──
 
 def make_linear(in_features: int, out_features: int) -> Tuple[str, int, int, int, str]:
@@ -201,7 +214,9 @@ def make_cnn(in_channels: int, filters: list, fc_sizes: list,
 # ── Autoencoder ──
 
 def make_ae(input_dim: int, hidden_dim: int) -> Tuple[str, int, int, int, str]:
-    params = 2 * (input_dim * hidden_dim + hidden_dim)
+    encoder = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
+    decoder = nn.Sequential(nn.Linear(hidden_dim, input_dim))
+    params = count_params(encoder) + count_params(decoder)
     code = (
         f"class M{{}}(nn.Module):\n"
         f"    def __init__(self):\n"
@@ -265,7 +280,15 @@ def make_deep_mlp(dim: int, num_layers: int, out_dim: int = 10) -> Tuple[str, in
 def make_stacked_ae(dim: int, num_layers: int,
                     bottleneck_ratio: int = 4) -> Tuple[str, int, int, int, str]:
     hidden = max(1, dim // bottleneck_ratio)
-    params = dim * hidden + hidden + (num_layers - 1) * (hidden * hidden + hidden) * 2 + hidden * dim + dim
+    enc_layers = [nn.Linear(dim, hidden), nn.ReLU()]
+    for _ in range(num_layers - 1):
+        enc_layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+    dec_layers = []
+    for _ in range(num_layers - 1):
+        dec_layers += [nn.Linear(hidden, hidden), nn.ReLU()]
+    dec_layers.append(nn.Linear(hidden, dim))
+    params = (count_params(nn.Sequential(*enc_layers))
+              + count_params(nn.Sequential(*dec_layers)))
     code = f"class M{{}}(nn.Module):\n    def __init__(self):\n        super().__init__()\n"
     code += "        self.encoder = nn.Sequential(\n"
     code += f"            nn.Linear({dim}, {hidden}), nn.ReLU(),\n"
@@ -285,12 +308,10 @@ def make_transformer(d_model: int, nhead: int, num_layers: int,
                      dim_feedforward: int = None) -> Tuple[str, int, int, int, str]:
     if dim_feedforward is None:
         dim_feedforward = d_model * 4
-    block_params = (
-        (4 * d_model * d_model + 4 * d_model)
-        + (d_model * dim_feedforward * 2 + dim_feedforward + d_model)
-        + 4 * d_model
-    )
-    params = block_params * num_layers + d_model * 10 + 10
+    nhead = _safe_nheads(d_model, nhead)
+    block = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, batch_first=True)
+    fc = nn.Linear(d_model, 10)
+    params = count_params(block) * num_layers + count_params(fc)
     code = f"class M{{}}(nn.Module):\n    def __init__(self):\n        super().__init__()\n"
     code += f"        self.blocks = nn.ModuleList()\n"
     for _ in range(num_layers):
@@ -493,12 +514,13 @@ def make_rescnn(in_channels: int, stages: list, num_classes: int = 10):
     params = 0
     code = f"class M{{}}(nn.Module):\n    def __init__(self):\n        super().__init__()\n"
     code += f"        self.stem = nn.Sequential(nn.Conv2d({in_channels}, {stages[0][0]}, 3, padding=1), nn.BatchNorm2d({stages[0][0]}), nn.ReLU())\n"
-    params += in_channels * stages[0][0] * 9 + stages[0][0] * 2  # Conv weight+bias + BN
+    stem = nn.Sequential(nn.Conv2d(in_channels, stages[0][0], 3, padding=1),
+                         nn.BatchNorm2d(stages[0][0]), nn.ReLU())
+    params = count_params(stem)
 
     prev_ch = stages[0][0]
-    all_stages = []
     for i, (out_ch, num_blocks) in enumerate(stages):
-        stage_code = f"        self.stage{i} = nn.ModuleList()\n"
+        code += f"        self.stage{i} = nn.ModuleList()\n"
         for b in range(num_blocks):
             ch_in = prev_ch if b == 0 else out_ch
             code += f"        self.stage{i}.append(nn.Sequential(\n"
@@ -510,9 +532,8 @@ def make_rescnn(in_channels: int, stages: list, num_classes: int = 10):
             params += ch_in * out_ch * 9 + out_ch + out_ch * out_ch * 9 + out_ch + out_ch * 4  # 2 Conv + 2 BN
             if b == 0 and ch_in != out_ch:
                 code += f"        self.stage{i}_skip = nn.Conv2d({ch_in}, {out_ch}, 1)\n"
-                params += ch_in * out_ch
+                params += count_params(nn.Conv2d(ch_in, out_ch, 1))  # includes bias
             prev_ch = out_ch
-        all_stages.append(i)
 
     code += "        self.pool = nn.AdaptiveAvgPool2d(1)\n"
     code += f"        self.fc = nn.Linear({prev_ch}, {num_classes})\n"
@@ -558,19 +579,27 @@ def make_sepcnn(in_channels: int, channels: list, num_classes: int = 10):
 
 def make_densecnn(in_channels: int, growth_rate: int, num_layers: int, num_classes: int = 10):
     """Dense CNN: each layer receives all previous feature maps."""
-    params = 0
+    stem = nn.Conv2d(in_channels, growth_rate * 2, 3, padding=1)
+    params = count_params(stem)
+    prev_total = growth_rate * 2
+    layers = []
+    layer_ins = []
+    for i in range(num_layers):
+        layer_ins.append(prev_total)
+        layers.append(nn.Sequential(
+            nn.BatchNorm2d(prev_total), nn.ReLU(),
+            nn.Conv2d(prev_total, growth_rate, 3, padding=1)
+        ))
+        params += count_params(layers[-1])
+        prev_total += growth_rate
     code = f"class M{{}}(nn.Module):\n    def __init__(self):\n        super().__init__()\n"
     code += f"        self.stem = nn.Conv2d({in_channels}, {growth_rate*2}, 3, padding=1)\n"
-    params += in_channels * growth_rate * 2 * 9 + growth_rate * 2
-    prev_total = growth_rate * 2
     code += "        self.layers = nn.ModuleList()\n"
-    for i in range(num_layers):
+    for in_ch in layer_ins:
         code += f"        self.layers.append(nn.Sequential(\n"
-        code += f"            nn.BatchNorm2d({prev_total}), nn.ReLU(),\n"
-        code += f"            nn.Conv2d({prev_total}, {growth_rate}, 3, padding=1)\n"
+        code += f"            nn.BatchNorm2d({in_ch}), nn.ReLU(),\n"
+        code += f"            nn.Conv2d({in_ch}, {growth_rate}, 3, padding=1)\n"
         code += f"        ))\n"
-        params += prev_total * 2 + growth_rate + prev_total * growth_rate * 9 + growth_rate
-        prev_total += growth_rate
     code += "        self.pool = nn.AdaptiveAvgPool2d(1)\n"
     code += f"        self.fc = nn.Linear({prev_total}, {num_classes})\n"
     params += prev_total * num_classes + num_classes
@@ -587,8 +616,10 @@ def make_attnlstm(input_size: int, hidden_size: int, num_layers: int,
     """LSTM with multi-head self-attention pooling over hidden states."""
     lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
     lstm_p = sum(p.numel() for p in lstm.parameters())
-    # Multi-head attention: Q, K, V projections
-    attn_p = 3 * hidden_size * hidden_size + 3 * hidden_size
+    # Multi-head attention (real instance: includes out_proj which a
+    # hand-computed QKV formula misses)
+    nh = _safe_nheads(hidden_size, num_heads)
+    attn_p = count_params(nn.MultiheadAttention(hidden_size, nh, batch_first=True))
     fc_p = hidden_size * num_classes + num_classes
     params = lstm_p + attn_p + fc_p
 
@@ -609,7 +640,8 @@ def make_attnlstm(input_size: int, hidden_size: int, num_layers: int,
 
 def make_selfattn(d_model: int, num_layers: int, num_heads: int, num_classes: int = 10):
     """Stacked self-attention layers (no feed-forward, minimal version)."""
-    attn_per_layer = 3 * d_model * d_model + 3 * d_model  # Q,K,V projections
+    nh = _safe_nheads(d_model, num_heads)
+    attn_per_layer = count_params(nn.MultiheadAttention(d_model, nh, batch_first=True))
     params = attn_per_layer * num_layers + d_model * num_classes + num_classes
     code = (f"class M{{}}(nn.Module):\n"
             f"    def __init__(self):\n        super().__init__()\n"
@@ -651,13 +683,14 @@ def make_vit(patch_size: int, d_model: int, num_layers: int, num_heads: int,
     """Vision Transformer: patch embedding + positional encoding + Transformer encoder."""
     num_patches = (image_size // patch_size) ** 2
     patch_dim = patch_size * patch_size * 3  # assume RGB
-    patch_emb_p = patch_dim * d_model + d_model
-    pos_emb_p = num_patches * d_model
-    # Single TransformerEncoderLayer: self-attn + FFN
-    layer_p = (4 * d_model * d_model + 4 * d_model) + (d_model * d_model * 8 + d_model * 4 + d_model)
-    total_layer_p = layer_p * num_layers
-    cls_head_p = d_model * num_classes + num_classes
-    params = patch_emb_p + pos_emb_p + total_layer_p + cls_head_p
+    nhead = _safe_nheads(d_model, num_heads)
+    patch_emb = nn.Linear(patch_dim, d_model)
+    pos_emb = nn.Parameter(torch.randn(1, num_patches, d_model))
+    cls_token = nn.Parameter(torch.randn(1, 1, d_model))
+    layer = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
+    fc = nn.Linear(d_model, num_classes)
+    params = (count_params(patch_emb) + pos_emb.numel() + cls_token.numel()
+              + count_params(layer) * num_layers + count_params(fc))
 
     code = (f"class M{{}}(nn.Module):\n"
             f"    def __init__(self):\n        super().__init__()\n"
@@ -666,7 +699,7 @@ def make_vit(patch_size: int, d_model: int, num_layers: int, num_heads: int,
             f"        self.patch_emb = nn.Linear({patch_dim}, {d_model})\n"
             f"        self.pos_emb = nn.Parameter(torch.randn(1, {num_patches}, {d_model}))\n"
             f"        self.encoder = nn.TransformerEncoder(\n"
-            f"            nn.TransformerEncoderLayer(d_model={d_model}, nhead={num_heads}, batch_first=True),\n"
+            f"            nn.TransformerEncoderLayer(d_model={d_model}, nhead={nhead}, batch_first=True),\n"
             f"            num_layers={num_layers}\n"
             f"        )\n"
             f"        self.cls_token = nn.Parameter(torch.randn(1, 1, {d_model}))\n"
@@ -712,7 +745,7 @@ def make_unet(in_channels: int, base_ch: int, num_stages: int, num_classes: int 
     code += f"        self.bottleneck = nn.Sequential(\n"
     code += f"            nn.Conv2d({prev_ch}, {ch}, 3, padding=1), nn.ReLU(),\n"
     code += f"            nn.Conv2d({ch}, {ch}, 3, padding=1), nn.ReLU()\n"
-    code += f"        ))\n"
+    code += f"        )\n"
     params += prev_ch * ch * 9 + ch + ch * ch * 9 + ch
     prev_ch = ch
 
@@ -755,14 +788,18 @@ def make_mixer(patch_size: int, d_model: int, num_layers: int,
     """MLP-Mixer: patch embedding → alternating token-mix and channel-mix MLPs."""
     num_patches = (image_size // patch_size) ** 2
     patch_dim = patch_size * patch_size * 3
-    emb_p = patch_dim * d_model + d_model
-    # Per layer: token-mix MLP (2 linear across patches) + channel-mix MLP (2 linear across dims)
-    token_mix_p = num_patches * num_patches * 2 + num_patches * 2
-    channel_mix_p = d_model * d_model * 2 + d_model * 2
-    layer_p = token_mix_p + channel_mix_p
-    total_p = layer_p * num_layers
-    head_p = d_model * num_classes + num_classes
-    params = emb_p + total_p + head_p
+    patch_emb = nn.Linear(patch_dim, d_model)
+    mixer = nn.Sequential(
+        nn.LayerNorm(d_model),
+        nn.Linear(num_patches, num_patches), nn.GELU(),
+        nn.Linear(num_patches, num_patches),
+        nn.LayerNorm(d_model),
+        nn.Linear(d_model, d_model), nn.GELU(),
+        nn.Linear(d_model, d_model),
+    )
+    fc = nn.Linear(d_model, num_classes)
+    params = (count_params(patch_emb) + count_params(mixer) * num_layers
+              + count_params(fc))
 
     code = (f"class M{{}}(nn.Module):\n"
             f"    def __init__(self):\n        super().__init__()\n"
@@ -795,20 +832,20 @@ def make_mixer(patch_size: int, d_model: int, num_layers: int,
 def make_gpt(vocab_size: int, d_model: int, num_layers: int, num_heads: int,
              block_size: int = 128):
     """Small GPT-style decoder: token + position embedding → Transformer decoder → LM head."""
-    tok_emb_p = vocab_size * d_model
-    pos_emb_p = block_size * d_model
-    # Decoder layer: masked MHA + FFN
-    layer_p = (4 * d_model * d_model + 4 * d_model) + (d_model * d_model * 8 + d_model * 4 + d_model)
-    layers_p = layer_p * num_layers
-    lm_head_p = d_model * vocab_size + vocab_size
-    params = tok_emb_p + pos_emb_p + layers_p + lm_head_p
+    nhead = _safe_nheads(d_model, num_heads)
+    tok_emb = nn.Embedding(vocab_size, d_model)
+    pos_emb = nn.Embedding(block_size, d_model)
+    layer = nn.TransformerDecoderLayer(d_model, nhead, batch_first=True)
+    lm_head = nn.Linear(d_model, vocab_size)
+    params = (count_params(tok_emb) + count_params(pos_emb)
+              + count_params(layer) * num_layers + count_params(lm_head))
 
     code = (f"class M{{}}(nn.Module):\n"
             f"    def __init__(self):\n        super().__init__()\n"
             f"        self.tok_emb = nn.Embedding({vocab_size}, {d_model})\n"
             f"        self.pos_emb = nn.Embedding({block_size}, {d_model})\n"
             f"        self.decoder = nn.TransformerDecoder(\n"
-            f"            nn.TransformerDecoderLayer(d_model={d_model}, nhead={num_heads}, batch_first=True),\n"
+            f"            nn.TransformerDecoderLayer(d_model={d_model}, nhead={nhead}, batch_first=True),\n"
             f"            num_layers={num_layers}\n"
             f"        )\n"
             f"        self.lm_head = nn.Linear({d_model}, {vocab_size})\n"
@@ -827,21 +864,24 @@ def make_gpt(vocab_size: int, d_model: int, num_layers: int, num_heads: int,
 def make_t5(vocab_size: int, d_model: int, num_layers: int, num_heads: int,
             num_classes: int = 10):
     """Encoder-decoder transformer (T5-style)."""
-    tok_emb_p = vocab_size * d_model * 2  # shared embedding
-    # Encoder layer + Decoder layer
-    enc_layer_p = (4 * d_model * d_model + 4 * d_model) + (d_model * d_model * 8 + d_model * 4 + d_model)
-    dec_layer_p = enc_layer_p + (4 * d_model * d_model + 4 * d_model)  # + cross-attention
-    params = tok_emb_p + enc_layer_p * num_layers + dec_layer_p * num_layers + d_model * num_classes + num_classes
+    nhead = _safe_nheads(d_model, num_heads)
+    tok_emb = nn.Embedding(vocab_size, d_model)
+    enc_layer = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
+    dec_layer = nn.TransformerDecoderLayer(d_model, nhead, batch_first=True)
+    fc = nn.Linear(d_model, num_classes)
+    params = (count_params(tok_emb)
+              + (count_params(enc_layer) + count_params(dec_layer)) * num_layers
+              + count_params(fc))
 
     code = (f"class M{{}}(nn.Module):\n"
             f"    def __init__(self):\n        super().__init__()\n"
             f"        self.tok_emb = nn.Embedding({vocab_size}, {d_model})\n"
             f"        self.encoder = nn.TransformerEncoder(\n"
-            f"            nn.TransformerEncoderLayer(d_model={d_model}, nhead={num_heads}, batch_first=True),\n"
+            f"            nn.TransformerEncoderLayer(d_model={d_model}, nhead={nhead}, batch_first=True),\n"
             f"            num_layers={num_layers}\n"
             f"        )\n"
             f"        self.decoder = nn.TransformerDecoder(\n"
-            f"            nn.TransformerDecoderLayer(d_model={d_model}, nhead={num_heads}, batch_first=True),\n"
+            f"            nn.TransformerDecoderLayer(d_model={d_model}, nhead={nhead}, batch_first=True),\n"
             f"            num_layers={num_layers}\n"
             f"        )\n"
             f"        self.fc = nn.Linear({d_model}, {num_classes})\n"

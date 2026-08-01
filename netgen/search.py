@@ -7,6 +7,7 @@ import random
 from typing import List, Tuple, Optional, Callable
 
 from .architectures import *
+from .generator import _rewrite_model_dims
 
 
 # Candidate type: (description, code, params, input_dim, output_dim, model_type)
@@ -579,6 +580,26 @@ def _build_pool(hi: int, arch_filter: Optional[List[str]] = None) -> List[str]:
     return pool
 
 
+def _apply_fixed_dims(candidate: Candidate, fixed_input: Optional[int],
+                    fixed_output: Optional[int]) -> Optional[Candidate]:
+    """Rewrite a candidate's code so its input/output dims match the
+    requested fixed values, then recount parameters by instantiating it.
+    Returns None if the rewrite cannot be instantiated."""
+    desc, code, params, inp, outp, mtype = candidate
+    new_in = fixed_input if fixed_input is not None else inp
+    new_out = fixed_output if fixed_output is not None else outp
+    if new_in == inp and new_out == outp:
+        return candidate
+    new_code = _rewrite_model_dims(code, inp, outp, new_in, new_out, mtype)
+    try:
+        ns = {}
+        exec("import torch\nimport torch.nn as nn\n" + new_code.format(1), ns)
+        new_params = count_params(ns["M1"]())
+    except Exception:
+        return None
+    return desc, new_code, new_params, new_in, new_out, mtype
+
+
 def find_candidates(lo: int, hi: int, count: int, seed: int = 42,
                     arch_filter: Optional[List[str]] = None,
                     fixed_input: Optional[int] = None,
@@ -599,6 +620,11 @@ def find_candidates(lo: int, hi: int, count: int, seed: int = 42,
     Returns:
         List of Candidate tuples sorted by parameter count.
     """
+    if lo < 0 or hi < 0:
+        raise ValueError(f"Parameter range bounds must be non-negative (got {lo}-{hi}).")
+    if lo >= hi:
+        raise ValueError(f"Low bound ({lo}) must be less than high bound ({hi}).")
+
     random.seed(seed)
     results: List[Candidate] = []
     seen: set = set()
@@ -623,6 +649,10 @@ def find_candidates(lo: int, hi: int, count: int, seed: int = 42,
         try:
             candidate = sampler(lo, hi)
             if candidate is not None:
+                if fixed_input is not None or fixed_output is not None:
+                    candidate = _apply_fixed_dims(candidate, fixed_input, fixed_output)
+                    if candidate is None:
+                        continue
                 desc = candidate[0]
                 if desc not in seen:
                     seen.add(desc)
