@@ -106,8 +106,21 @@ def _parse_model(path: str, index: int, folder_name: str) -> ModelInfo:
             log_text = f.read()
         info.history = _parse_log(log_text)
         if info.history:
-            # Best metric from log
-            if 'Accuracy' in log_text or 'accuracy' in log_text.lower() or 'Acc' in log_text:
+            # Best metric from log. Validation metrics (added by the
+            # val-split training templates) are preferred — they rank
+            # generalization instead of train-set overfitting.
+            if any('val_loss' in h or 'val_acc' in h for h in info.history):
+                if any('val_acc' in h for h in info.history):
+                    info.best_metric_name = 'val_acc'
+                    info.best_metric_value = max(
+                        (h.get('val_acc', h.get('accuracy', 0)) for h in info.history),
+                        default=None)
+                else:
+                    info.best_metric_name = 'val_loss'
+                    info.best_metric_value = min(
+                        (h.get('val_loss', h.get('loss', float('inf'))) for h in info.history),
+                        default=None)
+            elif 'Accuracy' in log_text or 'accuracy' in log_text.lower() or 'Acc' in log_text:
                 info.best_metric_name = 'accuracy'
                 info.best_metric_value = max(
                     (h.get('accuracy', h.get('acc', 0)) for h in info.history),
@@ -193,14 +206,18 @@ def list_models(directory: str) -> str:
     return '\n'.join(lines)
 
 
+def _find_model(models: list, identifier: str) -> Optional[ModelInfo]:
+    """Locate a model by ID, exact folder name, or substring."""
+    for m in models:
+        if str(m.index) == identifier or m.folder_name == identifier or identifier in m.folder_name:
+            return m
+    return None
+
+
 def info_model(directory: str, identifier: str) -> str:
     """Show detailed info for a specific model."""
     models = scan_models(directory)
-    model = None
-    for m in models:
-        if str(m.index) == identifier or m.folder_name == identifier or identifier in m.folder_name:
-            model = m
-            break
+    model = _find_model(models, identifier)
     if model is None:
         return f"Model not found: {identifier}"
 
@@ -389,8 +406,71 @@ def export_models(directory: str, fmt: str = 'md', output: str = None) -> str:
     return f"Exported to {output} ({fmt})"
 
 
+def train_model(directory: str, identifier: str, epochs: int = None,
+                lr: float = None, batch_size: int = None, device: str = None,
+                seed: int = None) -> str:
+    """Train a single model by running its train.py in a subprocess.
+
+    The subprocess inherits stdout/stderr so progress bars show live.
+    `device` overrides the model's DEVICE_PRIORITY (e.g. 'cuda,mps').
+    """
+    import subprocess
+    import sys
+
+    model = _find_model(scan_models(directory), identifier)
+    if model is None:
+        return f"Model not found: {identifier}"
+    train_py = os.path.join(model.folder_path, 'train.py')
+    if not os.path.exists(train_py):
+        return f"No train.py in {model.folder_name}"
+
+    cmd = [sys.executable, 'train.py']
+    if epochs is not None:
+        cmd += ['--epochs', str(epochs)]
+    if lr is not None:
+        cmd += ['--lr', str(lr)]
+    if batch_size is not None:
+        cmd += ['--batch-size', str(batch_size)]
+    if device:
+        cmd += ['--device', device]
+    if seed is not None:
+        cmd += ['--seed', str(seed)]
+
+    print(f"\n  Training {model.folder_name} ...\n")
+    try:
+        result = subprocess.run(cmd, cwd=model.folder_path, timeout=7200)
+    except subprocess.TimeoutExpired:
+        return f"Training {model.folder_name} TIMEOUT (>2h)"
+    if result.returncode != 0:
+        return f"Training {model.folder_name} FAILED (exit {result.returncode})"
+    return f"\n  {model.folder_name}: training OK"
+
+
+def eval_model(directory: str, identifier: str) -> str:
+    """Evaluate a single model by running its eval.py in a subprocess."""
+    import subprocess
+    import sys
+
+    model = _find_model(scan_models(directory), identifier)
+    if model is None:
+        return f"Model not found: {identifier}"
+    eval_py = os.path.join(model.folder_path, 'eval.py')
+    if not os.path.exists(eval_py):
+        return f"No eval.py in {model.folder_name}"
+    if not os.path.exists(os.path.join(model.folder_path, 'model.pth')):
+        return f"{model.folder_name} not trained yet (no model.pth). Run: netgen train {model.index}"
+
+    print(f"\n  Evaluating {model.folder_name} ...\n")
+    result = subprocess.run([sys.executable, 'eval.py'], cwd=model.folder_path,
+                            timeout=1800)
+    if result.returncode != 0:
+        return f"Evaluation {model.folder_name} FAILED (exit {result.returncode})"
+    return f"\n  {model.folder_name}: evaluation OK"
+
+
 def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
-                    batch_size: int = None, seed: int = 42) -> str:
+                    batch_size: int = None, seed: int = 42,
+                    device: str = None, retries: int = 1) -> str:
     """Train all untrained models with the same settings, then rank them.
 
     Args:
@@ -432,6 +512,8 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
             cmd += ['--lr', str(lr)]
         if batch_size is not None:
             cmd += ['--batch-size', str(batch_size)]
+        if device:
+            cmd += ['--device', device]
 
         t0 = time.time()
         print(f"  [{i}/{n}] {model.folder_name:<35s} ", end='', flush=True)
@@ -442,10 +524,17 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
             elapsed = time.time() - t0
 
             if result.returncode != 0:
-                print(f"FAIL ({elapsed:.1f}s)")
-                model.status = 'error'
-                model.error_msg = result.stderr[-200:] if result.stderr else 'Unknown error'
-                continue
+                # One automatic retry (transient failures happen, e.g. OOM at init)
+                if retries > 0:
+                    print(f"FAIL ({elapsed:.1f}s) -> retry... ", end='', flush=True)
+                    result = subprocess.run(cmd, capture_output=True, text=True,
+                                            timeout=600, cwd=model.folder_path)
+                    elapsed = time.time() - t0
+                if result.returncode != 0:
+                    print(f"FAIL ({elapsed:.1f}s)")
+                    model.status = 'error'
+                    model.error_msg = result.stderr[-200:] if result.stderr else 'Unknown error'
+                    continue
 
             # Re-parse the model to get updated metrics
             updated = _parse_model(model.folder_path, model.index, model.folder_name)
@@ -512,5 +601,55 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
             f.write(f"| {rank} | {m.folder_name} | {m.params:,} | {metric_str} | {r['elapsed']:.1f}s |\n")
         f.write(f"\n*Generated by `netgen benchmark`*\n")
 
+    # ── Loss curve chart (best effort; requires matplotlib) ──
+    curve_path = _plot_benchmark_curves(results, directory)
+    if curve_path:
+        with open(report_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n## Loss Curves\n\n![benchmark curves]({os.path.basename(curve_path)})\n")
+
     lines.append(f"\nSaved benchmark_report.md")
     return '\n'.join(lines)
+
+
+def _plot_benchmark_curves(results: list, directory: str):
+    """Plot every trained model's (val) loss curve into benchmark_curves.png.
+
+    Returns the image path, or None if matplotlib is unavailable or there
+    is nothing to plot.
+    """
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    plotted = 0
+    for r in results:
+        hist = r['model'].history
+        if not hist:
+            continue
+        epochs = [h.get('epoch', i) for i, h in enumerate(hist)]
+        if any('val_loss' in h for h in hist):
+            key = 'val_loss'
+        elif any('loss' in h for h in hist):
+            key = 'loss'
+        else:
+            key = 'recon_loss'
+        vals = [h.get(key, float('nan')) for h in hist]
+        ax.plot(epochs, vals, label=r['model'].folder_name)
+        plotted += 1
+    if not plotted:
+        plt.close(fig)
+        return None
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Loss (val when available)')
+    ax.legend(fontsize=7, ncol=2)
+    ax.grid(True, alpha=0.3)
+    ax.set_title('Benchmark — Loss Curves')
+    plt.tight_layout()
+    out = os.path.join(directory, 'benchmark_curves.png')
+    plt.savefig(out, dpi=120)
+    plt.close(fig)
+    return out

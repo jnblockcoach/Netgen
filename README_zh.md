@@ -17,7 +17,9 @@ netgen generate --range <min>-<max> --count <N> [选项]
 netgen list     [--dir <path>]
 netgen info     <id> [--dir <path>]
 netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
-netgen benchmark [--dir <path>] [--epochs N] [--lr X]
+netgen train    <id> [--epochs N] [--lr X] [--device cuda,mps]
+netgen eval     <id>
+netgen benchmark [--dir <path>] [--epochs N] [--lr X] [--device cuda,mps]
 netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
 netgen export   [--dir <path>] [--format md|csv|json]
 netgen archs    [--tree|--list]
@@ -50,9 +52,23 @@ netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
 ```bash
 netgen benchmark --epochs 10
 netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
+netgen benchmark --device cuda,mps   # 为所有模型覆盖训练设备
 ```
 
-自动训练目录内所有未训练模型，输出排行榜并保存 `benchmark_report.md`。
+- 每个模型训练时划分 **20% 验证集**（config.py 的 `VAL_SPLIT`），
+  `training_log.md` 增加 `Val Loss` / `Val Acc` 列，排名使用**验证集指标**（反映泛化而非过拟合）
+- 训练失败的模型自动重试一次（`--retries N`）
+- 输出 `benchmark_report.md` + `benchmark_curves.png` 损失曲线图
+
+### `train` / `eval` — 单模型训练与评估
+
+```bash
+netgen train 001                    # 使用模型 config 默认参数训练
+netgen train 001 --epochs 50 --lr 0.001 --device cpu
+netgen eval 001                     # 运行该模型的 eval.py
+```
+
+`--device` 可覆盖生成时写入的设备优先级。
 
 ### `list` / `info` / `compare` / `clean` / `export` — 模型管理
 

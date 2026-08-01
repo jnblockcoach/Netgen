@@ -8,7 +8,7 @@ from .search import find_candidates, list_architectures
 from .generator import gen_folder
 from .manager import (
     list_models, info_model, compare_models, clean_models, export_models,
-    benchmark_models
+    benchmark_models, train_model, eval_model
 )
 
 
@@ -214,10 +214,24 @@ def _cmd_clean(args):
     print(clean_models(args.dir, args.keep_best, args.status, args.untrained, args.dry_run))
 
 
+# ── Subcommand: train ──
+
+def _cmd_train(args):
+    print(train_model(args.dir, args.id, args.epochs, args.lr,
+                      args.batch_size, args.device, args.seed))
+
+
+# ── Subcommand: eval ──
+
+def _cmd_eval(args):
+    print(eval_model(args.dir, args.id))
+
+
 # ── Subcommand: benchmark ──
 
 def _cmd_benchmark(args):
-    print(benchmark_models(args.dir, args.epochs, args.lr, args.batch_size, args.seed))
+    print(benchmark_models(args.dir, args.epochs, args.lr, args.batch_size,
+                           args.seed, args.device, args.retries))
 
 
 # ── Subcommand: export ──
@@ -375,6 +389,29 @@ def build_parser() -> argparse.ArgumentParser:
     bm.add_argument("--lr", type=float, default=None, help="Learning rate (uses config default if not set).")
     bm.add_argument("--batch-size", type=int, dest="batch_size", default=None, help="Batch size.")
     bm.add_argument("--seed", type=int, default=42, help="Random seed.")
+    bm.add_argument("--device", default=None,
+                    help="Device priority override for all models, e.g. 'cuda,mps' (cpu always final fallback).")
+    bm.add_argument("--retries", type=int, default=1,
+                    help="Automatic retries per failed model (default: 1).")
+
+    # netgen train
+    tr = sub.add_parser("train", aliases=["fit"],
+                        help="Train a single model",
+                        description="Train one generated model by running its train.py (live output).")
+    tr.add_argument("id", help="Model ID (e.g. 001) or folder name.")
+    tr.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
+    tr.add_argument("--epochs", "-e", type=int, default=None, help="Training epochs (uses config default).")
+    tr.add_argument("--lr", type=float, default=None, help="Learning rate (uses config default).")
+    tr.add_argument("--batch-size", type=int, dest="batch_size", default=None, help="Batch size.")
+    tr.add_argument("--device", default=None,
+                    help="Device priority override, e.g. 'cuda,mps' (cpu always final fallback).")
+    tr.add_argument("--seed", type=int, default=None, help="Random seed.")
+
+    # netgen eval
+    ev = sub.add_parser("eval", help="Evaluate a single model",
+                        description="Run a trained model's eval.py (live output).")
+    ev.add_argument("id", help="Model ID (e.g. 001) or folder name.")
+    ev.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
 
     # netgen export
     exp = sub.add_parser("export", help="Export model comparison report",
@@ -426,6 +463,10 @@ def run(args: Optional[list[str]] = None) -> int:
         return _cmd_clean(opts) or 0
     elif opts.command in ('benchmark', 'bm'):
         return _cmd_benchmark(opts) or 0
+    elif opts.command in ('train', 'fit'):
+        return _cmd_train(opts) or 0
+    elif opts.command == 'eval':
+        return _cmd_eval(opts) or 0
     elif opts.command in ('archs', 'architectures'):
         return _cmd_archs(opts) or 0
     elif opts.command == 'export':

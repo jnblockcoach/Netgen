@@ -168,6 +168,7 @@ _args.add_argument('--scheduler', choices=['none','cosine','plateau','step'], he
 _args.add_argument('--patience', type=int, help='Early stopping patience')
 _args.add_argument('--grad-clip', type=float, dest='grad_clip', help='Gradient clipping max norm')
 _args.add_argument('--seed', type=int, help='Random seed')
+_args.add_argument('--device', type=str, default=None, help='Device priority override, e.g. cuda,mps (cpu always final fallback)')
 _args.add_argument('--resume', type=str, default=None, help='Resume from checkpoint path')
 _a = _args.parse_args()
 if _a.lr is not None: LR = _a.lr
@@ -181,6 +182,9 @@ if _a.scheduler is not None: SCHEDULER = _a.scheduler
 if _a.patience is not None: PATIENCE = _a.patience
 if _a.grad_clip is not None: GRAD_CLIP = _a.grad_clip
 if _a.seed is not None: SEED = _a.seed
+if _a.device is not None:
+    DEVICE_PRIORITY = [d.strip().lower() for d in _a.device.split(',') if d.strip()]
+    DEVICE = resolve_device()
 """
 
 # ── File I/O ──
@@ -250,6 +254,7 @@ def gen_config(input_dim: int, output_dim: int,
         f"PATIENCE = 10                # early stopping patience\n"
         f"GRAD_CLIP = 1.0              # gradient clipping max norm\n"
         f"SEED = 42                    # random seed\n"
+        f"VAL_SPLIT = 0.2              # validation split ratio (0 = no validation)\n"
         f"LOSS_TYPE = '{loss_type}'    # loss function variant\n"
     )
 
@@ -291,15 +296,20 @@ def _gen_device_block(device_priority: Optional[list]) -> str:
         f"DEVICE_PRIORITY = {list(priority)}\n"
         f"\n"
         f"import torch\n"
-        f"_device = None\n"
-        f"for _d in DEVICE_PRIORITY:\n"
-        f"    if _d == 'cuda' and torch.cuda.is_available():\n"
-        f"        _device = torch.device('cuda'); break\n"
-        f"    if _d == 'mps' and getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():\n"
-        f"        _device = torch.device('mps'); break\n"
-        f"    if _d == 'cpu':\n"
-        f"        _device = torch.device('cpu'); break\n"
-        f"DEVICE = _device if _device is not None else torch.device('cpu')\n"
+        f"def resolve_device(priority=None):\n"
+        f"    '''Return the first available torch.device in the priority list.\n"
+        f"    priority overrides DEVICE_PRIORITY when given; 'cpu' always works.\n"
+        f"    Used by train.py --device override as well.\n"
+        f"    '''\n"
+        f"    for _d in (priority if priority is not None else DEVICE_PRIORITY):\n"
+        f"        if _d == 'cuda' and torch.cuda.is_available():\n"
+        f"            return torch.device('cuda')\n"
+        f"        if _d == 'mps' and getattr(torch.backends, 'mps', None) is not None and torch.backends.mps.is_available():\n"
+        f"            return torch.device('mps')\n"
+        f"        if _d == 'cpu':\n"
+        f"            return torch.device('cpu')\n"
+        f"    return torch.device('cpu')\n"
+        f"DEVICE = resolve_device()\n"
     )
 
 
@@ -336,6 +346,9 @@ def gen_enhanced_train(tier: str, model_type: str, class_name: str) -> str:
 
     # Move model & data to the configured DEVICE (from config DEVICE_PRIORITY)
     train_code = _inject_device_support(train_code)
+
+    # Hold out a validation split; track val metrics in training_log
+    train_code = _inject_val_split(train_code, model_type)
 
     return train_code
 
@@ -396,6 +409,95 @@ def _inject_device_support(code: str) -> str:
     # 6. Insert the _dev helper after the data import
     code = code.replace('from data import SynData\n',
                         'from data import SynData\n' + _DEV_HELPER)
+    return code
+
+
+_VAL_SPLIT_CODE = (
+    "ds=SynData()\n"
+    "_n_val=max(1,int(len(ds)*VAL_SPLIT));_n_train=len(ds)-_n_val\n"
+    "_train_ds,_val_ds=torch.utils.data.random_split(ds,[_n_train,_n_val],generator=torch.Generator().manual_seed(SEED))\n"
+    "lo=torch.utils.data.DataLoader(_train_ds,BATCH_SIZE,shuffle=True)\n"
+    "val_lo=torch.utils.data.DataLoader(_val_ds,BATCH_SIZE,shuffle=False)\n"
+)
+
+# Per-model-type validation metric blocks (inserted before history.append).
+# Variables are prefixed with _ to avoid clashing with template locals.
+_VAL_CLS = (
+    "    with torch.no_grad():\n"
+    "        _vl=0;_vc=0;_vn=0\n"
+    "        for x,y in map(_dev, val_lo):\n"
+    "            _vl+=criterion(m(x),y).item()*x.size(0)\n"
+    "            _vc+=(m(x).argmax(1)==y).sum().item()\n"
+    "            _vn+=x.size(0)\n"
+    "        val_loss=_vl/_vn;val_acc=_vc/_vn\n"
+    "    val_history.append((val_loss,val_acc))\n"
+)
+
+_VAL_REG = (
+    "    with torch.no_grad():\n"
+    "        _vl=0;_vn=0\n"
+    "        for x,y in map(_dev, val_lo):\n"
+    "            _vl+=criterion(m(x),y).item()*x.size(0)\n"
+    "            _vn+=x.size(0)\n"
+    "        val_loss=_vl/_vn\n"
+    "    val_history.append((val_loss,))\n"
+)
+
+_VAL_AE = (
+    "    with torch.no_grad():\n"
+    "        _vl=0;_vn=0\n"
+    "        for x in map(_dev, val_lo):\n"
+    "            _vl+=nn.MSELoss()(m(x)[0],x).item()*x.size(0)\n"
+    "            _vn+=x.size(0)\n"
+    "        val_loss=_vl/_vn\n"
+    "    val_history.append((val_loss,))\n"
+)
+
+_VAL_MT = (
+    "    with torch.no_grad():\n"
+    "        _vl=0;_vc1=0;_vc2=0;_vn=0\n"
+    "        for x,y1,y2 in map(_dev, val_lo):\n"
+    "            o1,o2=m(x)\n"
+    "            _vl+=nn.CrossEntropyLoss()(o1,y1).item()*x.size(0)+nn.CrossEntropyLoss()(o2,y2).item()*x.size(0)\n"
+    "            _vc1+=(o1.argmax(1)==y1).sum().item()\n"
+    "            _vc2+=(o2.argmax(1)==y2).sum().item()\n"
+    "            _vn+=x.size(0)\n"
+    "        val_loss=_vl/_vn;val_acc=(_vc1+_vc2)/(2*_vn)\n"
+    "    val_history.append((val_loss,val_acc))\n"
+)
+
+
+def _inject_val_split(code: str, model_type: str) -> str:
+    """Add a validation split + per-epoch val metrics to training code.
+
+    - GCN (whole-graph training) and GAN/contrastive/siamese (no simple
+      criterion at epoch end) keep their original single-metric logging.
+    - New models log extra 'Val Loss' (and 'Val Acc' for classifiers)
+      columns in training_log.md; managers prefer them over train metrics.
+    """
+    if 'DataLoader' not in code:
+        # GCN: whole-graph training, no batch split — but log footers
+        # reference val_history, so still initialize it (stays empty).
+        return code.replace("history=[]\n", "history=[]\nval_history=[]\n")
+
+    # 1. Split the dataset into train/val loaders
+    old = "ds=SynData();lo=torch.utils.data.DataLoader(ds,BATCH_SIZE,shuffle=True)\n"
+    if old not in code:
+        return code
+    code = code.replace(old, _VAL_SPLIT_CODE)
+
+    # 2. val_history accumulator
+    code = code.replace("history=[]\n", "history=[]\nval_history=[]\n")
+
+    # 3. Per-epoch val metrics before history.append
+    if model_type in ('ce', 'cnn', 'rnn'):
+        code = code.replace("    history.append((e,loss_val,acc))\n", _VAL_CLS + "    history.append((e,loss_val,acc))\n")
+    elif model_type == 'mse':
+        code = code.replace("    history.append((e,loss_val))\n", _VAL_REG + "    history.append((e,loss_val))\n")
+    elif model_type in ('ae', 'vae'):
+        code = code.replace("    history.append((e,recon_loss))\n", _VAL_AE + "    history.append((e,recon_loss))\n")
+    elif model_type == 'mt':
+        code = code.replace("    history.append((e,loss_val,a1,a2))\n", _VAL_MT + "    history.append((e,loss_val,a1,a2))\n")
     return code
 
 

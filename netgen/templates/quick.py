@@ -14,10 +14,12 @@ md += f'**Dataset**: {DATASET}  \\n'
 md += f'**Epochs**: {EPOCHS}  \\n'
 md += f'**Batch Size**: {BATCH_SIZE}  \\n'
 md += f'**Learning Rate**: {LR}  \\n\\n'
-md += '| Epoch | Loss | Accuracy |\\n'
-md += '|-------|------|----------|\\n'
+md += '| Epoch | Loss | Accuracy | Val Loss | Val Acc |\\n'
+md += '|-------|------|----------|----------|--------|\\n'
 for e, loss, acc in history:
-    md += f'| {e:5d} | {loss:.4f} | {acc:.4f} |\\n'
+    _vl = val_history[e - start_epoch][0] if e - start_epoch < len(val_history) else float('nan')
+    _va = val_history[e - start_epoch][1] if e - start_epoch < len(val_history) else float('nan')
+    md += f'| {e:5d} | {loss:.4f} | {acc:.4f} | {_vl:.4f} | {_va:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
@@ -30,10 +32,11 @@ md += f'**Dataset**: {DATASET}  \\n'
 md += f'**Epochs**: {EPOCHS}  \\n'
 md += f'**Batch Size**: {BATCH_SIZE}  \\n'
 md += f'**Learning Rate**: {LR}  \\n\\n'
-md += '| Epoch | Loss |\\n'
-md += '|-------|------|\\n'
+md += '| Epoch | Loss | Val Loss |\\n'
+md += '|-------|------|----------|\\n'
 for e, loss in history:
-    md += f'| {e:5d} | {loss:.4f} |\\n'
+    _vl = val_history[e - start_epoch][0] if e - start_epoch < len(val_history) else float('nan')
+    md += f'| {e:5d} | {loss:.4f} | {_vl:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
@@ -46,10 +49,11 @@ md += f'**Dataset**: {DATASET}  \\n'
 md += f'**Epochs**: {EPOCHS}  \\n'
 md += f'**Batch Size**: {BATCH_SIZE}  \\n'
 md += f'**Learning Rate**: {LR}  \\n\\n'
-md += '| Epoch | Recon Loss |\\n'
-md += '|-------|------------|\\n'
+md += '| Epoch | Recon Loss | Val Loss |\\n'
+md += '|-------|------------|----------|\\n'
 for e, loss in history:
-    md += f'| {e:5d} | {loss:.4f} |\\n'
+    _vl = val_history[e - start_epoch][0] if e - start_epoch < len(val_history) else float('nan')
+    md += f'| {e:5d} | {loss:.4f} | {_vl:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')
@@ -78,10 +82,12 @@ md += f'**Dataset**: {DATASET}  \\n'
 md += f'**Epochs**: {EPOCHS}  \\n'
 md += f'**Batch Size**: {BATCH_SIZE}  \\n'
 md += f'**Learning Rate**: {LR}  \\n\\n'
-md += '| Epoch | Loss | Acc1 | Acc2 |\\n'
-md += '|-------|------|------|------|\\n'
+md += '| Epoch | Loss | Acc1 | Acc2 | Val Loss | Val Acc |\\n'
+md += '|-------|------|------|------|----------|--------|\\n'
 for e, loss, a1, a2 in history:
-    md += f'| {e:5d} | {loss:.4f} | {a1:.4f} | {a2:.4f} |\\n'
+    _vl = val_history[e - start_epoch][0] if e - start_epoch < len(val_history) else float('nan')
+    _va = val_history[e - start_epoch][1] if e - start_epoch < len(val_history) else float('nan')
+    md += f'| {e:5d} | {loss:.4f} | {a1:.4f} | {a2:.4f} | {_vl:.4f} | {_va:.4f} |\\n'
 with open('training_log.md', 'w') as f:
     f.write(md)
 print('Saved training_log.md')\nprint(f'Best model saved as best_model.pth (loss={best_loss:.4f})')

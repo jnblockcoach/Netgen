@@ -18,7 +18,9 @@ netgen generate --range <min>-<max> --count <N> [options]
 netgen list     [--dir <path>]
 netgen info     <id> [--dir <path>]
 netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
-netgen benchmark [--dir <path>] [--epochs N] [--lr X]
+netgen train    <id> [--epochs N] [--lr X] [--device cuda,mps]
+netgen eval     <id>
+netgen benchmark [--dir <path>] [--epochs N] [--lr X] [--device cuda,mps]
 netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
 netgen export   [--dir <path>] [--format md|csv|json]
 netgen archs    [--tree|--list]
@@ -52,9 +54,24 @@ netgen generate --range 5000000000-10000000000 --count 3
 ```bash
 netgen benchmark --epochs 10
 netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
+netgen benchmark --device cuda,mps   # override device for all models
 ```
 
-Outputs a live leaderboard and saves `benchmark_report.md`.
+- Each model is trained with a **20% validation split** (`VAL_SPLIT` in
+  `config.py`); `training_log.md` gains `Val Loss` / `Val Acc` columns and
+  ranking uses **validation metrics** (generalization, not train-set fit).
+- Failed models are retried once automatically (`--retries N`).
+- Saves `benchmark_report.md` + a `benchmark_curves.png` loss-curve chart.
+
+### `train` / `eval` — Train or evaluate a single model
+
+```bash
+netgen train 001                    # train with the model's config defaults
+netgen train 001 --epochs 50 --lr 0.001 --device cpu
+netgen eval 001                     # run the model's eval.py
+```
+
+`--device` overrides the device priority baked in at generation time.
 
 ### `list` / `info` / `compare` / `clean` / `export` — Manage models
 
