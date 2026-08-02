@@ -20,6 +20,8 @@ netgen info     <id> [--dir <path>]
 netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
 netgen train    <id> [--epochs N] [--lr X] [--device cuda,mps]
 netgen eval     <id>
+netgen sweep    <id> [--epochs N] [--lrs 0.001,0.01] [--batches 64,128]
+netgen monitor  [--cpu 70] [--gpu 80] [--memory 60] [--interval 2]
 netgen benchmark [--dir <path>] [--epochs N] [--lr X] [--device cuda,mps]
 netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
 netgen export   [--dir <path>] [--format md|csv|json]
@@ -102,6 +104,28 @@ validation metric, **re-trains the winner** (final `model.pth`) and writes
 the best hyperparameters back into `config.py` — so plain
 `netgen train 001` afterwards uses them. Results are saved to
 `sweep_report.md`.
+
+### `monitor` — Watch python processes' resource usage
+
+```bash
+netgen monitor                 # defaults: cpu 70% / gpu 80% / memory 60%
+netgen monitor --cpu 50 --gpu 90 --memory 70 --interval 1
+netgen monitor --pid 12345,12346    # only these PIDs
+netgen monitor --once               # sample once and exit (script-friendly)
+netgen monitor --duration 60        # run for a minute, then stop
+```
+
+Live table of every python process (train.py, eval.py, sweep.py, ...):
+per-process CPU (per core), RAM share, GPU VRAM, plus machine-wide totals.
+When usage exceeds a limit it prints a clear **warning** — the monitor
+**never kills processes**; it only watches and informs.
+
+- `--cpu`/`--memory` are percentages of the whole machine (all python
+  processes combined); `--gpu` is the python share of total VRAM.
+- GPU stats need `nvidia-ml-py` (`pip install nvidia-ml-py`) or the
+  `nvidia-smi` CLI; without either the GPU column shows `n/a`.
+- `psutil` is required (`pip install psutil`, included in generated
+  `requirements.txt`).
 
 ### `train` / `eval` — Train or evaluate a single model
 

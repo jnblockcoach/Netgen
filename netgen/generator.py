@@ -927,7 +927,12 @@ def gen_data_explore(class_name: str) -> str:
 
 def gen_requirements() -> str:
     """Generate requirements.txt."""
-    return "torch>=2.0.0\nnumpy\nmatplotlib\n# scikit-learn (optional, for real datasets)\n"
+    return ("torch>=2.0.0\n"
+            "numpy\nmatplotlib\n"
+            "# psutil (required by `netgen monitor`)\n"
+            "psutil\n"
+            "# scikit-learn (optional, for real datasets)\n"
+            "# nvidia-ml-py (optional, GPU process stats for `netgen monitor`)\n")
 
 
 # ── README generator ──

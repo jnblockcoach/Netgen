@@ -11,6 +11,7 @@ from .manager import (
     list_models, info_model, compare_models, clean_models, export_models,
     benchmark_models, train_model, eval_model, sweep_model
 )
+from .monitor import run_monitor
 
 
 # ── Shared constants ──
@@ -282,6 +283,25 @@ def _cmd_eval(args):
     print(eval_model(args.dir, args.id))
 
 
+# ── Subcommand: monitor ──
+
+def _cmd_monitor(args):
+    pids = None
+    if args.pid:
+        try:
+            pids = [int(x) for x in args.pid.split(',') if x.strip()]
+        except ValueError:
+            print("Error: --pid must be comma-separated integers.", file=sys.stderr)
+            return 1
+    try:
+        run_monitor(args.cpu, args.gpu, args.memory, args.interval,
+                    args.duration, args.once, pids)
+    except SystemExit as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    return 0
+
+
 # ── Subcommand: sweep ──
 
 def _cmd_sweep(args):
@@ -501,6 +521,27 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--seed", type=int, default=42, help="Random seed.")
     sw.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
 
+    # netgen monitor
+    mon = sub.add_parser("monitor", aliases=["top"],
+                         help="Watch python processes' CPU/GPU/memory usage live",
+                         description="Live resource monitor for python processes "
+                                     "(e.g. train.py). Warns when usage exceeds "
+                                     "limits — NEVER kills processes.")
+    mon.add_argument("--cpu", type=float, default=70.0,
+                     help="CPU warning limit in %% of the machine (all python processes, default: 70).")
+    mon.add_argument("--gpu", type=float, default=80.0,
+                     help="GPU-memory warning limit in %% of VRAM used by python (default: 80).")
+    mon.add_argument("--memory", type=float, default=60.0,
+                     help="RAM warning limit in %% of the machine used by python (default: 60).")
+    mon.add_argument("--interval", type=float, default=2.0,
+                     help="Refresh interval in seconds (default: 2).")
+    mon.add_argument("--duration", type=float, default=0.0,
+                     help="Run for this many seconds, then stop (0 = until Ctrl+C).")
+    mon.add_argument("--once", action="store_true",
+                     help="Sample once and exit (script-friendly).")
+    mon.add_argument("--pid", default=None,
+                     help="Only watch these PIDs (comma-separated). Default: all python processes.")
+
     # netgen export
     exp = sub.add_parser("export", help="Export model comparison report",
                          description="Export model metadata and metrics to a file.")
@@ -557,6 +598,8 @@ def run(args: Optional[list[str]] = None) -> int:
         return _cmd_eval(opts) or 0
     elif opts.command == 'sweep':
         return _cmd_sweep(opts) or 0
+    elif opts.command in ('monitor', 'top'):
+        return _cmd_monitor(opts) or 0
     elif opts.command in ('archs', 'architectures'):
         return _cmd_archs(opts) or 0
     elif opts.command == 'export':

@@ -20,6 +20,7 @@ netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
 netgen train    <id> [--epochs N] [--lr X] [--device cuda,mps]
 netgen eval     <id>
 netgen sweep    <id> [--epochs N] [--lrs 0.001,0.01] [--batches 64,128]
+netgen monitor  [--cpu 70] [--gpu 80] [--memory 60] [--interval 2]
 netgen benchmark [--dir <path>] [--epochs N] [--lr X] [--device cuda,mps]
 netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
 netgen export   [--dir <path>] [--format md|csv|json]
@@ -92,6 +93,27 @@ netgen sweep 001 --epochs 10 --lrs 0.001,0.01,0.0001 --batches 32,64,128
 用该模型自己的 `train.py` 跑所有 lr × batch_size 组合，按验证指标排名，
 **用最佳组合重训**（最终 `model.pth`）并把最优超参写回 `config.py`——
 之后 `netgen train 001` 直接使用。结果保存到 `sweep_report.md`。
+
+### `monitor` — 进程资源监视器
+
+```bash
+netgen monitor                 # 默认阈值：cpu 70% / gpu 80% / memory 60%
+netgen monitor --cpu 50 --gpu 90 --memory 70 --interval 1
+netgen monitor --pid 12345,12346    # 只监视这些 PID
+netgen monitor --once               # 采样一次后退出（适合脚本）
+netgen monitor --duration 60        # 运行 60 秒后自动停止
+```
+
+实时展示所有 python 进程（train.py、eval.py、sweep.py 等）的
+CPU（单核基准）、内存占比、GPU 显存，以及全部 python 进程的
+**机器级合计占用**。任一指标超过阈值会打印醒目的 **⚠ 警告**——
+监视器**只监视和提醒，绝不终止进程**。
+
+- `--cpu`/`--memory` 按整机百分比计（所有 python 进程合计）；
+  `--gpu` 为 python 进程占用的显存比例
+- GPU 统计需要 `nvidia-ml-py`（`pip install nvidia-ml-py`）或
+  `nvidia-smi` 命令行；都没有时 GPU 列显示 `n/a`
+- 依赖 `psutil`（已包含在生成的 `requirements.txt` 中）
 
 ### `train` / `eval` — 单模型训练与评估
 
