@@ -4,9 +4,10 @@ import subprocess
 import sys
 
 from netgen import find_candidates, gen_folder
-from netgen.manager import (clean_models, compare_models, eval_model,
-                            export_models, info_model, list_models,
-                            scan_models, train_model, _parse_log)
+from netgen.manager import (benchmark_models, clean_models, compare_models,
+                            eval_model, export_models, info_model,
+                            list_models, scan_models, sweep_model,
+                            train_model, _parse_log)
 
 
 def _make_model(scratch, index=1, params_range=(5000, 20000), seed=7):
@@ -133,3 +134,37 @@ def test_eval_untrained_model(scratch):
     _make_model(scratch)
     out = eval_model(scratch, "1")
     assert "not trained" in out
+
+
+def test_benchmark_workers_force(scratch):
+    _make_model(scratch)
+    _make_model(scratch, index=2)
+    out = benchmark_models(scratch, epochs=1, workers=2, force=True, device="cpu")
+    assert "BENCHMARK RESULTS" in out
+    report = os.path.join(scratch, 'benchmark_report.md')
+    assert os.path.exists(report)
+    content = open(report, encoding='utf-8').read()
+    assert "2 trained" in content or "2/2 models" in content
+
+
+def test_benchmark_time_budget_no_crash(scratch):
+    _make_model(scratch)
+    # Tiny budget: models time out but the benchmark must still return
+    out = benchmark_models(scratch, epochs=1, time_budget=0.001, device="cpu")
+    assert isinstance(out, str) and out.strip() != ""
+
+
+def test_sweep_updates_config(scratch):
+    folder = _make_model(scratch)
+    out = sweep_model(scratch, "1", epochs=1, lrs=[0.01], batches=[32],
+                      device="cpu")
+    assert "SWEEP RESULTS" in out
+    cfg = open(os.path.join(folder, 'config.py'), encoding='utf-8').read()
+    assert 'LR = 0.01' in cfg and 'BATCH_SIZE = 32' in cfg
+    report = os.path.join(scratch, 'sweep_report.md')
+    assert os.path.exists(report)
+
+
+def test_sweep_unknown_model(scratch):
+    out = sweep_model(scratch, "999")
+    assert "not found" in out

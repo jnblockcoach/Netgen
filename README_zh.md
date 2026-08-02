@@ -19,6 +19,7 @@ netgen info     <id> [--dir <path>]
 netgen compare  [--dir <path>] [--sort params|accuracy|loss] [--top N]
 netgen train    <id> [--epochs N] [--lr X] [--device cuda,mps]
 netgen eval     <id>
+netgen sweep    <id> [--epochs N] [--lrs 0.001,0.01] [--batches 64,128]
 netgen benchmark [--dir <path>] [--epochs N] [--lr X] [--device cuda,mps]
 netgen clean    [--dir <path>] [--untrained] [--dry-run|--force]
 netgen export   [--dir <path>] [--format md|csv|json]
@@ -45,7 +46,24 @@ netgen generate --device cuda,mps --range 10000-20000 --count 20
 netgen generate --device cpu --range 10000-20000 --count 20   # 只用 CPU
 netgen generate --preset cv --range 5000-50000 --count 10
 netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
+netgen generate --range 1K-50K --count 5 --dataset iris     # 真实特征数据
+netgen generate --range 1K-50K --count 3 --dataset mnist    # 2D CNN 与展平网络
+netgen generate --range 1K-50K --count 3 --dataset cifar10  # 额外支持 vit/mixer
 ```
+
+`--dataset` 选择数据源（默认 `syn`）。真实数据集：`iris`、`wine`、
+`breast_cancer`、`moons`、`circles`、`blobs`、`mnist`、`cifar10`、`text`、
+`line`。数据集会固定模型输入维度并自动过滤不兼容架构：
+
+- **向量数据集**（iris、wine 等）：监督向量网络（`mlp`、`linear`、`wide`、
+  `deep`、`resblock`、`moe`、`unary`），输入维重写为数据集特征数
+- **图像数据集**（mnist、cifar10）：2D 网络（`cnn`、`rescnn`、`sepcnn`、
+  `densecnn`、`unet`）保持图像形状（`Conv2d(1|3, ...)`）；其余架构使用
+  **展平样本**（MNIST → 784 维向量）。`cifar10` 额外允许 RGB 的
+  `vit`/`mixer`。首次训练需下载 torchvision 数据
+- 图像数据集的 `eval.py` 测量**独立测试集准确率**（`SynData(train=False)`）
+- 特殊数据契约的架构（RNN 正弦序列、gpt/t5 token、GCN 图、GAN/自监督/
+  多任务）保留合成数据，不参与真实数据集
 
 ### `benchmark` — 一键对比训练
 
@@ -53,12 +71,27 @@ netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
 netgen benchmark --epochs 10
 netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
 netgen benchmark --device cuda,mps   # 为所有模型覆盖训练设备
+netgen benchmark --workers 4        # 并发训练 4 个模型
+netgen benchmark --force            # 已训练模型也重训
+netgen benchmark --time-budget 30   # 总耗时约 30 分钟（均分给各模型）
 ```
 
 - 每个模型训练时划分 **20% 验证集**（config.py 的 `VAL_SPLIT`），
   `training_log.md` 增加 `Val Loss` / `Val Acc` 列，排名使用**验证集指标**（反映泛化而非过拟合）
 - 训练失败的模型自动重试一次（`--retries N`）
+- `--time-budget MIN` 将预算均分给各模型作为超时；超时模型以减半 epochs 重试一次
 - 输出 `benchmark_report.md` + `benchmark_curves.png` 损失曲线图
+
+### `sweep` — 单模型超参搜索
+
+```bash
+netgen sweep 001                    # 默认网格：lr × batch
+netgen sweep 001 --epochs 10 --lrs 0.001,0.01,0.0001 --batches 32,64,128
+```
+
+用该模型自己的 `train.py` 跑所有 lr × batch_size 组合，按验证指标排名，
+**用最佳组合重训**（最终 `model.pth`）并把最优超参写回 `config.py`——
+之后 `netgen train 001` 直接使用。结果保存到 `sweep_report.md`。
 
 ### `train` / `eval` — 单模型训练与评估
 

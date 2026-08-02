@@ -47,7 +47,29 @@ netgen generate --device cpu --range 10000-20000 --count 20   # CPU only
 netgen generate --preset cv --range 5000-50000 --count 10
 netgen generate --preset nlp --arch lstm --range 10000-50000 --count 5
 netgen generate --range 5000000000-10000000000 --count 3
+netgen generate --range 1K-50K --count 5 --dataset iris     # real features
+netgen generate --range 1K-50K --count 3 --dataset mnist    # 2-D CNNs & flat nets
+netgen generate --range 1K-50K --count 3 --dataset cifar10  # adds vit/mixer
 ```
+
+`--dataset` picks the data source (`syn` by default). Real datasets:
+`iris`, `wine`, `breast_cancer`, `moons`, `circles`, `blobs`, `mnist`,
+`cifar10`, `text`, `line`. The dataset fixes the model's input dimensions
+and incompatible architectures are filtered automatically:
+
+- **Vector datasets** (iris, wine, ...): supervised vector nets (`mlp`,
+  `linear`, `wide`, `deep`, `resblock`, `moe`, `unary`) — inputs rewritten
+  to the dataset's feature count.
+- **Image datasets** (mnist, cifar10): 2-D nets (`cnn`, `rescnn`, `sepcnn`,
+  `densecnn`, `unet`) keep the image shape (`Conv2d(1|3, ...)`); everything
+  else gets **flattened samples** (MNIST → 784-D vectors). `cifar10` also
+  allows the RGB patch nets `vit`/`mixer`. The first training run downloads
+  torchvision data (one time).
+- Image-dataset `eval.py` measures **held-out test-set accuracy**
+  (`SynData(train=False)`).
+- Architectures with special data contracts (RNN sine sequences, gpt/t5
+  tokens, GCN graphs, GAN/self-supervised/multitask) keep their synthetic
+  data and are excluded from real-dataset runs.
 
 ### `benchmark` — Train all & rank
 
@@ -55,13 +77,31 @@ netgen generate --range 5000000000-10000000000 --count 3
 netgen benchmark --epochs 10
 netgen benchmark --epochs 20 --lr 0.01 --batch-size 128
 netgen benchmark --device cuda,mps   # override device for all models
+netgen benchmark --workers 4        # train 4 models concurrently
+netgen benchmark --force            # re-train already-trained models
+netgen benchmark --time-budget 30   # ~30min wall clock, split across models
 ```
 
 - Each model is trained with a **20% validation split** (`VAL_SPLIT` in
   `config.py`); `training_log.md` gains `Val Loss` / `Val Acc` columns and
   ranking uses **validation metrics** (generalization, not train-set fit).
 - Failed models are retried once automatically (`--retries N`).
+- `--time-budget MIN` splits the budget across models as per-model timeouts;
+  models that exceed it retry once with half the epochs.
 - Saves `benchmark_report.md` + a `benchmark_curves.png` loss-curve chart.
+
+### `sweep` — Hyperparameter search for one model
+
+```bash
+netgen sweep 001                    # default grid: lr × batch
+netgen sweep 001 --epochs 10 --lrs 0.001,0.01,0.0001 --batches 32,64,128
+```
+
+Tries every lr × batch_size combo with the model's own `train.py`, ranks by
+validation metric, **re-trains the winner** (final `model.pth`) and writes
+the best hyperparameters back into `config.py` — so plain
+`netgen train 001` afterwards uses them. Results are saved to
+`sweep_report.md`.
 
 ### `train` / `eval` — Train or evaluate a single model
 
@@ -181,11 +221,14 @@ Architecture-specific config: VAE has `BETA`, GAN has `G_LR`/`D_LR`, Contrastive
 
 `--dataset` auto-filters architectures and rewrites model dimensions:
 
-| Task | Datasets | Auto-selected Architectures |
-|------|----------|---------------------------|
-| Classification | iris, wine, breast_cancer, moons, circles, blobs, mnist, cifar10, text | linear, mlp, deep, wide, resblock, highway, moe, cnn, multitask |
-| Regression | line | linear, mlp, deep, wide, resblock |
-| Synthetic | syn | all 31 architectures |
+| Dataset | Auto-selected Architectures |
+|---------|----------------------------|
+| iris, wine, breast_cancer, moons, circles, blobs | `linear` `mlp` `wide` `deep` `resblock` `moe` `unary` |
+| line | same as above (regression) |
+| mnist | 2-D: `cnn` `rescnn` `sepcnn` `densecnn` `unet` + flat: same as above |
+| cifar10 | mnist set + `vit` `mixer` |
+| text | `gpt` `t5` |
+| syn | all 31 architectures |
 
 ## Architectures (31 total)
 

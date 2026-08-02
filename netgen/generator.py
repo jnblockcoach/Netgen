@@ -196,6 +196,52 @@ def write_file(path: str, content: str) -> None:
         f.write(content)
 
 
+# ── Dataset ↔ architecture compatibility ──
+
+# Architectures that consume 2-D image tensors (B, C, H, W). For image
+# datasets they keep the image shape; everything else gets flattened
+# samples (e.g. MNIST 1x28x28 -> 784-D vectors).
+IMAGE_2D_ARCHS = frozenset({'cnn', 'rescnn', 'sepcnn', 'densecnn', 'unet'})
+# Patch-based vision nets: unfold any HxW but hard-code 3 RGB channels
+# (cifar10-compatible; not usable on mnist or vector datasets).
+IMAGE_PATCH_ARCHS = frozenset({'vit', 'mixer'})
+IMAGE_DATASETS = frozenset({'mnist', 'cifar10'})
+
+# Token-based architectures (gpt/t5) and graph nets (gcn) have their own
+# data contracts; they are excluded from vector/image dataset searches.
+TOKEN_ARCHS = frozenset({'gpt', 't5'})
+GRAPH_ARCHS = frozenset({'gcn'})
+
+# Self-supervised / generative / sequence architectures whose training
+# templates need special data contracts (unlabeled pairs, multi-targets,
+# 3-D sequences) — incompatible with labeled real-world datasets.
+_SPECIAL_DATA_ARCHS = frozenset({
+    'gan', 'lstm', 'gru', 'bilstm', 'rnn', 'attnlstm',
+    'ae', 'sae', 'vae', 'contrastive', 'siamese', 'mt',
+    'selfattn', 'transformer'})
+
+
+def _gen_image_dataset_eval(class_name: str) -> str:
+    """Eval script for image datasets + 2-D architectures: measure test-set
+    accuracy from the held-out split (SynData(train=False))."""
+    return (
+        "import torch\n"
+        "from config import *\n"
+        f"from model import {class_name}\n"
+        "from data import SynData\n"
+        f"m={class_name}();m.load_state_dict(torch.load('model.pth',weights_only=True));m.eval()\n"
+        "ds=SynData(train=False)\n"
+        "lo=torch.utils.data.DataLoader(ds,batch_size=128,shuffle=False)\n"
+        "with torch.no_grad():\n"
+        "    correct=0;total=0\n"
+        "    for x,y in lo:\n"
+        "        x=x.to(DEVICE)\n"
+        "        correct+=(m(x).argmax(1)==y).sum().item()\n"
+        "        total+=x.size(0)\n"
+        "    print('Test Accuracy:'+str(correct/total))\n"
+    )
+
+
 # ── Dimension rewriting (for real dataset adaptation) ──
 
 def _rewrite_model_dims(code: str, old_in: int, old_out: int,
@@ -206,8 +252,25 @@ def _rewrite_model_dims(code: str, old_in: int, old_out: int,
     if old_in == new_in and old_out == new_out:
         return code
 
-    # Replace the FIRST nn.Linear/CONV2D/LSTM/GRU(old_in, ...) → new_in
     pat_first = rf'(nn\.(?:Linear|Conv2d|LSTM|GRU)\()(\s*){old_in}(\s*,)'
+    if 'self.router = nn.Linear' in code:
+        # MoE: in_dim is shared by the router, every expert's input/output
+        # linear, and the final fc — all must be rewritten.
+        code = re.sub(rf'nn\.Linear\((\s*){old_in}(\s*,)',
+                      rf'nn.Linear(\g<1>{new_in}\g<2>', code)
+        code = re.sub(rf'nn\.Linear\((\s*)\d+(\s*),(\s*){old_in}(\s*)\)',
+                      rf'nn.Linear(\g<1>{new_in}\g<2>,\g<3>{new_in}\g<4>)', code)
+        return code
+    if 'self.transforms' in code and 'self.gates' in code:
+        # Highway: forward() applies gate(x) BEFORE transform(x), so both
+        # first-layer linears take the raw input. BUT the residual term
+        # (1-gate)*x requires x to stay in the layer dim — i.e. the input
+        # dim must equal the hidden dim. Datasets with different input dims
+        # are rejected by the CLI filter; keep this guard for API users.
+        code = re.sub(pat_first, rf'\g<1>{new_in},', code, count=2)
+        return code
+
+    # Replace the FIRST nn.Linear/CONV2D/LSTM/GRU(old_in, ...) → new_in
     code = re.sub(pat_first, rf'\g<1>{new_in},', code, count=1)
 
     # Replace the LAST nn.Linear(..., old_out) → new_out
@@ -681,17 +744,16 @@ def _enhance_training_display(code: str) -> str:
 
 def gen_predict(class_name: str, input_dim: int, model_type: str) -> str:
     """Generate predict.py for inference demonstration."""
-    if model_type == 'cnn':
+    if model_type in IMAGE_2D_ARCHS:
         body = (
-            "img = np.zeros((8, 8), dtype=np.float32)\n"
-            "img[3:5, :] = 1.0\n"
-            f"x = torch.from_numpy(img.reshape(1, {input_dim}, 8, 8).astype(np.float32)).to(DEVICE)\n"
-            "if INPUT_DIM == 3: x = x.repeat(1, 3, 1, 1)\n"
+            "from data import SynData\n"
+            "ds = SynData(train=False) if DATASET in ('mnist', 'cifar10') else SynData()\n"
+            "x = torch.stack([ds[i][0] for i in range(4)]).to(DEVICE)\n"
             "print(f'Input shape: {x.shape}')"
         )
     elif model_type == 'rnn':
         body = (
-            "x = torch.randn(1, 15, 1, device=DEVICE)\n"
+            f"x = torch.randn(1, 1, {input_dim}, device=DEVICE)\n"
             "print(f'Input shape: {x.shape}')"
         )
     elif model_type == 'gan':
@@ -937,6 +999,9 @@ def gen_folder(base_dir: str, index: int, description: str, code: str,
       - > 50M:       production (+ DDP, AMP, model sub-package, scripts)
     """
     tier = _get_tier(params)
+    # Architecture family — do NOT let dataset-task overrides replace it,
+    # it decides 2-D-vs-flat data layout and the eval strategy.
+    arch_mtype = model_type
 
     folder_name = f"{index:03d}-{description}"
     folder = os.path.join(base_dir, folder_name)
@@ -947,7 +1012,23 @@ def gen_folder(base_dir: str, index: int, description: str, code: str,
     loss_type = model_type if model_type in ('ce', 'mse', 'ae', 'contrastive') else 'ce'
 
     # --- Resolve dataset first (may override dims, model type, data code) ---
-    ds_code, ds_input_dim, ds_output_dim = get_dataset_code(dataset, input_dim, output_dim)
+    if dataset != 'syn':
+        bad = (model_type in _SPECIAL_DATA_ARCHS
+               or model_type in (TOKEN_ARCHS | GRAPH_ARCHS)
+               or (dataset not in IMAGE_DATASETS
+                   and model_type in (IMAGE_2D_ARCHS | IMAGE_PATCH_ARCHS)))
+        if bad:
+            raise ValueError(
+                f"Architecture '{arch_mtype}' is incompatible with dataset "
+                f"'{dataset}' (special data contract). Use 'syn' or filter "
+                f"architectures with --arch.")
+
+    # Image datasets: 2-D architectures keep the image shape; others get
+    # flattened samples so any vector architecture works.
+    flat = dataset in IMAGE_DATASETS and arch_mtype not in IMAGE_2D_ARCHS \
+        and arch_mtype not in IMAGE_PATCH_ARCHS
+    ds_code, ds_input_dim, ds_output_dim = get_dataset_code(dataset, input_dim, output_dim,
+                                                            flat=flat)
     if ds_code and dataset != 'syn':
         actual_data_code = ds_code
         # Override model type to match dataset task
@@ -985,10 +1066,14 @@ def gen_folder(base_dir: str, index: int, description: str, code: str,
                gen_enhanced_train(tier, model_type, class_name))
 
     # --- eval.py ---
-    _, _, raw_eval_code = get_templates(tier, model_type)
-    eval_code = raw_eval_code.replace('{cn}', class_name).replace(
-        "torch.load('model.pth')", "torch.load('model.pth', weights_only=True)")
-    eval_code = _inject_device_support_eval(eval_code)
+    if dataset in IMAGE_DATASETS and arch_mtype in (IMAGE_2D_ARCHS | IMAGE_PATCH_ARCHS):
+        # Image + 2-D/patch architecture: measure held-out test-set accuracy
+        eval_code = _gen_image_dataset_eval(class_name)
+    else:
+        _, _, raw_eval_code = get_templates(tier, model_type)
+        eval_code = raw_eval_code.replace('{cn}', class_name).replace(
+            "torch.load('model.pth')", "torch.load('model.pth', weights_only=True)")
+        eval_code = _inject_device_support_eval(eval_code)
     write_file(os.path.join(folder, "eval.py"), eval_code)
 
     # --- data_explore.py ---

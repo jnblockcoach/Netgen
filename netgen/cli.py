@@ -5,10 +5,11 @@ import sys
 from typing import Optional
 
 from .search import find_candidates, list_architectures
-from .generator import gen_folder
+from .generator import (gen_folder, IMAGE_2D_ARCHS, IMAGE_DATASETS,
+                          IMAGE_PATCH_ARCHS)
 from .manager import (
     list_models, info_model, compare_models, clean_models, export_models,
-    benchmark_models, train_model, eval_model
+    benchmark_models, train_model, eval_model, sweep_model
 )
 
 
@@ -34,9 +35,37 @@ _DATASET_TASK = {
     'line':          'regression',
 }
 
-_TASK_ARCHS = {
-    'classification': ['linear', 'mlp', 'deep', 'wide', 'resblock', 'highway', 'moe', 'cnn', 'multitask'],
-    'regression':    ['linear', 'mlp', 'deep', 'wide', 'resblock'],
+# Vector datasets: every supervised architecture that consumes 1-D feature
+# vectors (x, y). Excluded:
+#  - CNN-style (2-D input), patch (vit/mixer), token (gpt/t5), graph (gcn)
+#  - RNN family (their SynData is a sine sequence; forward expects 3-D inputs)
+#  - self-supervised/generative (ae/sae/vae/contrastive/siamese) and
+#    multitask (mt): their training templates need unlabeled or
+#    multi-target data, which real labeled datasets don't provide.
+_VECTOR_DATASET_ARCHS = sorted(
+    set(list_architectures()) - IMAGE_2D_ARCHS - IMAGE_PATCH_ARCHS
+    - {'gpt', 't5', 'gcn', 'gan', 'lstm', 'gru', 'bilstm', 'rnn', 'attnlstm',
+       'ae', 'sae', 'vae', 'contrastive', 'siamese', 'multitask',
+       'selfattn', 'transformer', 'highway'})
+
+# cifar10: 2-D nets + patch nets keep the image shape, everything else
+# (except token/graph/gan) gets flattened samples.
+_IMAGE_DATASET_ARCHS = sorted(set(_VECTOR_DATASET_ARCHS)
+                              | set(IMAGE_2D_ARCHS) | set(IMAGE_PATCH_ARCHS))
+# mnist is grayscale: patch nets (hard-coded RGB) can't be used.
+_MNIST_ARCHS = sorted(set(_VECTOR_DATASET_ARCHS) | set(IMAGE_2D_ARCHS))
+
+_DATASET_ARCHS = {
+    'iris':          _VECTOR_DATASET_ARCHS,
+    'wine':          _VECTOR_DATASET_ARCHS,
+    'breast_cancer': _VECTOR_DATASET_ARCHS,
+    'moons':         _VECTOR_DATASET_ARCHS,
+    'circles':       _VECTOR_DATASET_ARCHS,
+    'blobs':         _VECTOR_DATASET_ARCHS,
+    'line':          _VECTOR_DATASET_ARCHS,
+    'mnist':         _MNIST_ARCHS,
+    'cifar10':       _IMAGE_DATASET_ARCHS,
+    'text':          ['gpt', 't5'],
 }
 
 _PRESETS = {
@@ -110,13 +139,18 @@ def _resolve_arch_filter(opts, dataset: str) -> Optional[list[str]]:
             return None
 
     # Dataset compatibility filter
-    if dataset != 'syn' and dataset in _DATASET_TASK:
-        task = _DATASET_TASK[dataset]
-        compat = _TASK_ARCHS.get(task, [])
+    if dataset != 'syn' and dataset in _DATASET_ARCHS:
+        compat = _DATASET_ARCHS[dataset]
         if arch_filter:
             bad = [a for a in arch_filter if a not in compat]
             if bad:
-                print(f"Warning: {bad} not designed for {task}. Compatible: {compat}", file=sys.stderr)
+                print(f"Warning: {bad} incompatible with dataset '{dataset}'. "
+                      f"Compatible: {compat}", file=sys.stderr)
+            arch_filter = [a for a in arch_filter if a in compat]
+            if not arch_filter:
+                print(f"Error: No architectures compatible with dataset '{dataset}'. "
+                      f"Compatible: {compat}", file=sys.stderr)
+                return None
         else:
             arch_filter = compat
 
@@ -151,8 +185,29 @@ def _cmd_generate(args):
     print(f"Device priority: {', '.join(device_priority)} (cpu is always the final fallback)")
     print(f"Output: {output_dir}\n")
 
-    candidates = find_candidates(lo, hi, args.count, args.seed, arch_filter)
-    candidates.sort(key=lambda x: x[2])
+    if args.dataset in IMAGE_DATASETS:
+        # Image datasets fix the input shape per architecture family:
+        # 2-D nets get C channels, patch nets keep RGB, vector nets get
+        # the flattened image.
+        c_in = 1 if args.dataset == 'mnist' else 3
+        flat_dim = 784 if args.dataset == 'mnist' else 3072
+        candidates = []
+        two_d = [a for a in arch_filter if a in IMAGE_2D_ARCHS]
+        patch = [a for a in arch_filter if a in IMAGE_PATCH_ARCHS]
+        vec = [a for a in arch_filter
+               if a not in IMAGE_2D_ARCHS and a not in IMAGE_PATCH_ARCHS]
+        if two_d:
+            candidates += find_candidates(lo, hi, args.count, args.seed, two_d,
+                                          fixed_input=c_in)
+        if patch:
+            candidates += find_candidates(lo, hi, args.count, args.seed, patch)
+        if vec:
+            candidates += find_candidates(lo, hi, args.count, args.seed, vec,
+                                          fixed_input=flat_dim)
+        candidates.sort(key=lambda x: x[2])
+    else:
+        candidates = find_candidates(lo, hi, args.count, args.seed, arch_filter)
+        candidates.sort(key=lambda x: x[2])
 
     if len(candidates) == 0:
         print(f"Warning: Could not find any architectures in range {lo:,}-{hi:,}", file=sys.stderr)
@@ -227,11 +282,21 @@ def _cmd_eval(args):
     print(eval_model(args.dir, args.id))
 
 
+# ── Subcommand: sweep ──
+
+def _cmd_sweep(args):
+    lrs = [float(x) for x in args.lrs.split(',')] if args.lrs else None
+    batches = [int(x) for x in args.batches.split(',')] if args.batches else None
+    print(sweep_model(args.dir, args.id, args.epochs, lrs, batches,
+                      args.device, args.seed))
+
+
 # ── Subcommand: benchmark ──
 
 def _cmd_benchmark(args):
     print(benchmark_models(args.dir, args.epochs, args.lr, args.batch_size,
-                           args.seed, args.device, args.retries))
+                           args.seed, args.device, args.retries,
+                           args.workers, args.force, args.time_budget))
 
 
 # ── Subcommand: export ──
@@ -329,7 +394,11 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--count", type=int, default=20, help="Number of models (default: 20).")
     gen.add_argument("--output", "-o", default="./generated_models", help="Output directory.")
     gen.add_argument("--seed", type=int, default=42, help="Random seed (default: 42).")
-    gen.add_argument("--dataset", default="syn", help="Dataset name (default: syn).")
+    gen.add_argument("--dataset", default="syn",
+                    choices=['syn', 'iris', 'wine', 'breast_cancer', 'moons',
+                             'circles', 'blobs', 'mnist', 'cifar10', 'text', 'line'],
+                    help="Dataset (default: syn). Real data: iris/wine/breast_cancer/"
+                         "moons/circles/blobs/mnist/cifar10/text/line.")
     gen.add_argument("--arch", default=None, help="Architecture filter, e.g. 'mlp,cnn,lstm'.")
     gen.add_argument("--preset", "-p", default=None,
                      choices=['cv', 'nlp', 'gen', 'light', 'all'],
@@ -393,6 +462,13 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Device priority override for all models, e.g. 'cuda,mps' (cpu always final fallback).")
     bm.add_argument("--retries", type=int, default=1,
                     help="Automatic retries per failed model (default: 1).")
+    bm.add_argument("--workers", "-w", type=int, default=1,
+                    help="Train N models concurrently (default: 1).")
+    bm.add_argument("--force", action="store_true",
+                    help="Re-train already-trained models too.")
+    bm.add_argument("--time-budget", type=float, default=None, metavar="MIN",
+                    help="Overall wall-clock budget in minutes; split across "
+                         "models as per-model timeouts (half-epochs retry).")
 
     # netgen train
     tr = sub.add_parser("train", aliases=["fit"],
@@ -412,6 +488,18 @@ def build_parser() -> argparse.ArgumentParser:
                         description="Run a trained model's eval.py (live output).")
     ev.add_argument("id", help="Model ID (e.g. 001) or folder name.")
     ev.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
+
+    # netgen sweep
+    sw = sub.add_parser("sweep", help="Hyperparameter grid search for one model",
+                        description="Tries lr × batch_size combos, re-trains the "
+                                    "winner and writes it into config.py.")
+    sw.add_argument("id", help="Model ID (e.g. 001) or folder name.")
+    sw.add_argument("--epochs", "-e", type=int, default=5, help="Epochs per combo (default: 5).")
+    sw.add_argument("--lrs", default=None, help="Comma-separated learning rates, e.g. '0.001,0.01,0.0001'.")
+    sw.add_argument("--batches", default=None, help="Comma-separated batch sizes, e.g. '64,128'.")
+    sw.add_argument("--device", default=None, help="Device priority override, e.g. 'cuda,mps'.")
+    sw.add_argument("--seed", type=int, default=42, help="Random seed.")
+    sw.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
 
     # netgen export
     exp = sub.add_parser("export", help="Export model comparison report",
@@ -467,6 +555,8 @@ def run(args: Optional[list[str]] = None) -> int:
         return _cmd_train(opts) or 0
     elif opts.command == 'eval':
         return _cmd_eval(opts) or 0
+    elif opts.command == 'sweep':
+        return _cmd_sweep(opts) or 0
     elif opts.command in ('archs', 'architectures'):
         return _cmd_archs(opts) or 0
     elif opts.command == 'export':

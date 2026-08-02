@@ -68,9 +68,9 @@ _DATASET_REGISTRY = {
         "from torchvision import datasets, transforms\n"
         "\n"
         "class SynData(torch.utils.data.Dataset):\n"
-        "    def __init__(self):\n"
+        "    def __init__(self, train=True):\n"
         "        t = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])\n"
-        "        data = datasets.MNIST(root='./data', train=True, download=True, transform=t)\n"
+        "        data = datasets.MNIST(root='./data', train=train, download=True, transform=t)\n"
         "        self.X, self.y = data.data.float().unsqueeze(1) / 255.0, data.targets\n"
         "    def __len__(self):\n"
         "        return len(self.X)\n"
@@ -83,9 +83,9 @@ _DATASET_REGISTRY = {
         "from torchvision import datasets, transforms\n"
         "\n"
         "class SynData(torch.utils.data.Dataset):\n"
-        "    def __init__(self):\n"
+        "    def __init__(self, train=True):\n"
         "        t = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])\n"
-        "        data = datasets.CIFAR10(root='./data', train=True, download=True, transform=t)\n"
+        "        data = datasets.CIFAR10(root='./data', train=train, download=True, transform=t)\n"
         "        imgs = torch.stack([data[i][0] for i in range(len(data))])\n"
         "        self.X, self.y = imgs, torch.tensor([data[i][1] for i in range(len(data))])\n"
         "    def __len__(self):\n"
@@ -133,13 +133,23 @@ _DATASET_REGISTRY = {
 }
 
 
-def get_dataset_code(dataset: str, inp: int, outp: int) -> Tuple[Optional[str], int, int]:
+# Image datasets: input dim when flattened (vector-friendly architectures)
+_IMAGE_FLAT_DIMS = {
+    'mnist':   1 * 28 * 28,   # 784
+    'cifar10': 3 * 32 * 32,   # 3072
+}
+
+
+def get_dataset_code(dataset: str, inp: int, outp: int,
+                     flat: bool = False) -> Tuple[Optional[str], int, int]:
     """Get dataset code and dimensions for a named dataset.
 
     Args:
         dataset: Dataset name (e.g. 'iris', 'mnist', 'syn').
         inp: Default input dimension (used if dataset is 'syn').
         outp: Default output dimension (used if dataset is 'syn').
+        flat: For image datasets, flatten each sample to a 1-D vector
+            (e.g. MNIST 1x28x28 -> 784) so vector architectures work.
 
     Returns:
         Tuple of (code_string_or_None, input_dim, output_dim).
@@ -147,7 +157,13 @@ def get_dataset_code(dataset: str, inp: int, outp: int) -> Tuple[Optional[str], 
     """
     if dataset == 'syn' or dataset not in _DATASET_REGISTRY:
         return None, inp, outp
-    return _DATASET_REGISTRY[dataset]()
+    code, in_dim, out_dim = _DATASET_REGISTRY[dataset]()
+    if flat and dataset in _IMAGE_FLAT_DIMS:
+        # Flatten samples to 1-D vectors in __getitem__
+        code = code.replace("        return self.X[i], self.y[i]\n",
+                            "        return self.X[i].view(-1), self.y[i]\n")
+        in_dim = _IMAGE_FLAT_DIMS[dataset]
+    return code, in_dim, out_dim
 
 
 def list_datasets() -> list:

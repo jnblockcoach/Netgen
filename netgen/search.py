@@ -591,6 +591,11 @@ def _apply_fixed_dims(candidate: Candidate, fixed_input: Optional[int],
     if new_in == inp and new_out == outp:
         return candidate
     new_code = _rewrite_model_dims(code, inp, outp, new_in, new_out, mtype)
+    # Keep the folder description honest about the rewritten input dim
+    # (e.g. 'mlp-142x60x7' -> 'mlp-784x60x7' for MNIST).
+    if new_in != inp:
+        import re
+        desc = re.sub(r'-\d+', f'-{new_in}', desc, count=1)
     try:
         ns = {}
         exec("import torch\nimport torch.nn as nn\n" + new_code.format(1), ns)

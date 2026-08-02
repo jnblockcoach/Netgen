@@ -468,10 +468,128 @@ def eval_model(directory: str, identifier: str) -> str:
     return f"\n  {model.folder_name}: evaluation OK"
 
 
+def sweep_model(directory: str, identifier: str, epochs: int = 5,
+                lrs: list = None, batches: list = None, device: str = None,
+                seed: int = 42) -> str:
+    """Grid-search hyperparameters (lr × batch_size) for a single model.
+
+    Each combo is trained with the model's own train.py; the winner is
+    re-trained (final model.pth) and its hyperparameters are written back
+    into config.py so later plain `netgen train <id>` uses them.
+
+    Returns:
+        Formatted sweep report (also saved to sweep_report.md).
+    """
+    import subprocess
+    import sys
+    import time
+    import itertools
+
+    model = _find_model(scan_models(directory), identifier)
+    if model is None:
+        return f"Model not found: {identifier}"
+    train_py = os.path.join(model.folder_path, 'train.py')
+    if not os.path.exists(train_py):
+        return f"No train.py in {model.folder_name}"
+
+    lrs = lrs or [0.001, 0.01]
+    batches = batches or [64, 128]
+    combos = list(itertools.product(lrs, batches))
+
+    print(f"\n  Sweep {model.folder_name}: {len(combos)} combos × {epochs} epochs"
+          f" (lr={lrs}, batch={batches})\n")
+
+    results = []
+    for lr, bs in combos:
+        cmd = [sys.executable, 'train.py', '--epochs', str(epochs),
+               '--lr', str(lr), '--batch-size', str(bs), '--seed', str(seed)]
+        if device:
+            cmd += ['--device', device]
+        t0 = time.time()
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    timeout=1800, cwd=model.folder_path)
+            elapsed = time.time() - t0
+            if result.returncode == 0:
+                updated = _parse_model(model.folder_path, model.index, model.folder_name)
+                metric = (updated.best_metric_name or 'loss', updated.best_metric_value or 0)
+                print(f"    lr={lr:<8g} bs={bs:<4d} -> {metric[0]}={metric[1]:.4f} ({elapsed:.1f}s)")
+                results.append({'lr': lr, 'bs': bs, 'metric': metric, 'elapsed': elapsed, 'ok': True})
+            else:
+                print(f"    lr={lr:<8g} bs={bs:<4d} -> FAIL (exit {result.returncode})")
+                results.append({'lr': lr, 'bs': bs, 'metric': ('loss', float('inf')),
+                                'elapsed': time.time() - t0, 'ok': False})
+        except subprocess.TimeoutExpired:
+            print(f"    lr={lr:<8g} bs={bs:<4d} -> TIMEOUT (>30min)")
+            results.append({'lr': lr, 'bs': bs, 'metric': ('loss', float('inf')),
+                            'elapsed': time.time() - t0, 'ok': False})
+
+    ok = [r for r in results if r['ok']]
+    if not ok:
+        return "\nAll sweep combos failed. Check the model's train.py manually."
+
+    def _key(r):
+        name, val = r['metric']
+        return val if name in ('loss', 'recon_loss', 'g_loss', 'd_loss') else -val
+    ok.sort(key=_key)
+    best = ok[0]
+
+    # ── Re-train with the winning combo (final artifacts) ──
+    print(f"\n  Best: lr={best['lr']:g}, bs={best['bs']} "
+          f"({best['metric'][0]}={best['metric'][1]:.4f}) -> final run...")
+    cmd = [sys.executable, 'train.py', '--epochs', str(epochs),
+           '--lr', str(best['lr']), '--batch-size', str(best['bs']),
+           '--seed', str(seed)]
+    if device:
+        cmd += ['--device', device]
+    subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
+                   cwd=model.folder_path)
+
+    # ── Write the winning hyperparameters back into config.py ──
+    config_path = os.path.join(model.folder_path, 'config.py')
+    try:
+        cfg = open(config_path, encoding='utf-8').read()
+        import re
+        cfg = re.sub(r'^LR = .*', f'LR = {best["lr"]:g}                   # learning rate (set by netgen sweep)',
+                     cfg, count=1, flags=re.M)
+        cfg = re.sub(r'^BATCH_SIZE = .*',
+                     f'BATCH_SIZE = {best["bs"]}              # batch size (set by netgen sweep)',
+                     cfg, count=1, flags=re.M)
+        open(config_path, 'w', encoding='utf-8').write(cfg)
+    except OSError:
+        pass
+
+    # ── Report ──
+    lines = [
+        "",
+        f"  SWEEP RESULTS — {model.folder_name}",
+        f"  {'lr':<10s} {'batch':<7s} {'metric':<20s} {'time':>7s}",
+        f"  {'-'*10} {'-'*7} {'-'*20} {'-'*7}",
+    ]
+    for r in ok:
+        marker = " *" if r is best else ""
+        lines.append(
+            f"  {r['lr']:<10g} {r['bs']:<7d} {r['metric'][0]}={r['metric'][1]:.4f}{marker:<10s} {r['elapsed']:>6.1f}s")
+    lines.append(f"\n  Best: lr={best['lr']:g}, batch={best['bs']} — written to config.py")
+    report_path = os.path.join(directory, 'sweep_report.md')
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(f"# Sweep Report — {model.folder_name}\n\n")
+        f.write(f"**Epochs**: {epochs}  \n")
+        f.write(f"| lr | batch | metric | time |\n")
+        f.write(f"|----|-------|--------|------|\n")
+        for r in ok:
+            star = " **" if r is best else ""
+            f.write(f"| {r['lr']:g} | {r['bs']} | {r['metric'][0]}={r['metric'][1]:.4f}{star} | {r['elapsed']:.1f}s |\n")
+        f.write(f"\n*Generated by `netgen sweep`*\n")
+    lines.append(f"\nSaved sweep_report.md")
+    return '\n'.join(lines)
+
+
 def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
                     batch_size: int = None, seed: int = 42,
-                    device: str = None, retries: int = 1) -> str:
-    """Train all untrained models with the same settings, then rank them.
+                    device: str = None, retries: int = 1, workers: int = 1,
+                    force: bool = False, time_budget: float = None) -> str:
+    """Train models with the same settings, then rank them.
 
     Args:
         directory: Path to generated models.
@@ -479,6 +597,13 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
         lr: Learning rate (uses model's config default if None).
         batch_size: Batch size (uses model's config default if None).
         seed: Random seed.
+        device: Device priority override (e.g. 'cuda,mps').
+        retries: Automatic retries per failed model (default 1).
+        workers: How many models to train concurrently (default 1).
+        force: Re-train already-trained models too (default False).
+        time_budget: Overall wall-clock budget in minutes. The budget is
+            split evenly across models as a per-model timeout; models that
+            exceed it retry once with half the epochs.
 
     Returns:
         Formatted leaderboard string.
@@ -486,27 +611,34 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
     import subprocess
     import sys
     import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     models = scan_models(directory)
-    untrained = [m for m in models if m.status == 'generated']
+    todo = list(models) if force else [m for m in models if m.status == 'generated']
 
-    if not untrained:
-        return "All models already trained. Use 'netgen list' to see status."
+    if not todo:
+        return ("All models already trained. Use 'netgen list' to see status, "
+                "or --force to re-train everything.")
 
-    results = []
-    n = len(untrained)
+    if time_budget:
+        per_model_budget = time_budget * 60 / max(1, len(todo))
+        budget_note = f" | budget {time_budget:.0f}min ({per_model_budget:.0f}s/model)"
+    else:
+        per_model_budget = 600.0
+        budget_note = ""
 
-    print(f"\n{'='*60}")
-    print(f"  BENCHMARK: {n} models × {epochs} epochs")
-    print(f"{'='*60}\n")
+    n = len(todo)
+    print(f"\n{'='*70}")
+    print(f"  BENCHMARK: {n} models × {epochs} epochs" + budget_note)
+    print(f"  workers={workers}, device={device or 'config priority'}")
+    print(f"{'='*70}\n")
 
-    for i, model in enumerate(untrained, 1):
+    def _run_one(model):
+        """Train one model; returns (model, elapsed, ok, note)."""
         train_py = os.path.join(model.folder_path, 'train.py')
         if not os.path.exists(train_py):
-            print(f"  [{i}/{n}] {model.folder_name}  SKIP (no train.py)")
-            continue
+            return model, 0.0, False, "SKIP (no train.py)"
 
-        # Build command
         cmd = [sys.executable, 'train.py', '--epochs', str(epochs), '--seed', str(seed)]
         if lr is not None:
             cmd += ['--lr', str(lr)]
@@ -516,75 +648,80 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
             cmd += ['--device', device]
 
         t0 = time.time()
-        print(f"  [{i}/{n}] {model.folder_name:<35s} ", end='', flush=True)
+        eff_epochs = epochs
+        for attempt in range(retries + 2):
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True,
+                                        timeout=per_model_budget, cwd=model.folder_path)
+                elapsed = time.time() - t0
+                if result.returncode == 0:
+                    updated = _parse_model(model.folder_path, model.index, model.folder_name)
+                    return updated, elapsed, True, ""
+                # Failed: retry unless we exhausted attempts
+                if attempt >= retries:
+                    return (model, elapsed, False,
+                            f"FAIL ({result.stderr[-200:] if result.stderr else 'exit ' + str(result.returncode)})")
+            except subprocess.TimeoutExpired:
+                elapsed = time.time() - t0
+                if eff_epochs >= 2:
+                    eff_epochs //= 2
+                    cmd[cmd.index('--epochs') + 1] = str(eff_epochs)
+                    continue  # retry with half the epochs within the same budget
+                return model, elapsed, False, f"TIMEOUT (>{per_model_budget:.0f}s)"
+        return model, time.time() - t0, False, "FAIL (retries exhausted)"
 
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600,
-                                    cwd=model.folder_path)
-            elapsed = time.time() - t0
-
-            if result.returncode != 0:
-                # One automatic retry (transient failures happen, e.g. OOM at init)
-                if retries > 0:
-                    print(f"FAIL ({elapsed:.1f}s) -> retry... ", end='', flush=True)
-                    result = subprocess.run(cmd, capture_output=True, text=True,
-                                            timeout=600, cwd=model.folder_path)
-                    elapsed = time.time() - t0
-                if result.returncode != 0:
-                    print(f"FAIL ({elapsed:.1f}s)")
+    results = []
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=max(1, min(workers, n))) as pool:
+            futures = {pool.submit(_run_one, m): m for m in todo}
+            for fut in as_completed(futures):
+                model, elapsed, ok, note = fut.result()
+                status = f"OK ({elapsed:.1f}s)  {model.best_metric_name}={model.best_metric_value:.4f}" \
+                    if ok else f"{note} ({elapsed:.1f}s)"
+                print(f"  [{len(results) + 1}/{n}] {model.folder_name:<35s} {status}")
+                if not ok:
                     model.status = 'error'
-                    model.error_msg = result.stderr[-200:] if result.stderr else 'Unknown error'
-                    continue
-
-            # Re-parse the model to get updated metrics
-            updated = _parse_model(model.folder_path, model.index, model.folder_name)
-            metric_val = updated.best_metric_value or 0
-            metric_name = updated.best_metric_name or 'loss'
-
-            results.append({
-                'model': updated,
-                'elapsed': elapsed,
-                'metric_val': metric_val,
-                'metric_name': metric_name,
-            })
-            print(f"OK ({elapsed:.1f}s)  {metric_name}={metric_val:.4f}")
-
-        except subprocess.TimeoutExpired:
-            print("TIMEOUT")
-            model.status = 'error'
-            model.error_msg = 'Timeout (>10min)'
-        except Exception as e:
-            print(f"ERROR: {e}")
+                    model.error_msg = note
+                results.append((model, elapsed, ok))
+    else:
+        for i, model in enumerate(todo, 1):
+            print(f"  [{i}/{n}] {model.folder_name:<35s} ", end='', flush=True)
+            model, elapsed, ok, note = _run_one(model)
+            if ok:
+                print(f"OK ({elapsed:.1f}s)  {model.best_metric_name}={model.best_metric_value:.4f}")
+            else:
+                print(f"{note} ({elapsed:.1f}s)")
+                model.status = 'error'
+                model.error_msg = note
+            results.append((model, elapsed, ok))
 
     # ── Leaderboard ──
-    if not results:
+    ok_results = [r for r in results if r[2]]
+    if not ok_results:
         return "\nNo models completed training."
 
-    # Sort: accuracy/acc higher=better, loss/recon_loss/g_loss lower=better
-    def _sort_key(r):
-        nm = r['metric_name']
-        val = r['metric_val']
-        # Loss metrics: lower is better → negate for ascending sort
+    def _sort_key(item):
+        m = item[0]
+        nm = m.best_metric_name or 'loss'
+        val = m.best_metric_value or 0
         if nm in ('loss', 'recon_loss', 'g_loss', 'd_loss'):
             return val
-        # Accuracy metrics: higher is better → negate for descending sort
         return -val
-    results.sort(key=_sort_key)
+    ok_results.sort(key=_sort_key)
 
     lines = [
         "",
         f"{'='*70}",
-        f"  BENCHMARK RESULTS — {len(results)} models × {epochs} epochs",
+        f"  BENCHMARK RESULTS — {len(ok_results)}/{n} models × {epochs} epochs",
         f"{'='*70}",
         "",
         f"{'Rank':>4s}  {'Model':<30s}  {'Params':>10s}  {'Metric':<20s}  {'Time':>8s}",
         f"{'-'*4}  {'-'*30}  {'-'*10}  {'-'*20}  {'-'*8}",
     ]
-    for rank, r in enumerate(results, 1):
-        m = r['model']
-        metric_str = f"{r['metric_name']}={r['metric_val']:.4f}"
+    for rank, (m, elapsed, _) in enumerate(ok_results, 1):
+        metric_str = f"{m.best_metric_name}={m.best_metric_value:.4f}"
         lines.append(
-            f"{rank:4d}  {m.folder_name:<30s}  {m.params:>10,}  {metric_str:<20s}  {r['elapsed']:>7.1f}s"
+            f"{rank:4d}  {m.folder_name:<30s}  {m.params:>10,}  {metric_str:<20s}  {elapsed:>7.1f}s"
         )
 
     # Also write report
@@ -592,17 +729,17 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(f"# Benchmark Report\n\n")
         f.write(f"**Epochs**: {epochs}  \n")
-        f.write(f"**Models**: {len(results)} trained  \n\n")
+        f.write(f"**Models**: {len(ok_results)} trained\n\n")
         f.write(f"| Rank | Model | Params | Metric | Time |\n")
         f.write(f"|------|-------|--------|--------|------|\n")
-        for rank, r in enumerate(results, 1):
-            m = r['model']
-            metric_str = f"{r['metric_name']}={r['metric_val']:.4f}"
-            f.write(f"| {rank} | {m.folder_name} | {m.params:,} | {metric_str} | {r['elapsed']:.1f}s |\n")
+        for rank, (m, elapsed, _) in enumerate(ok_results, 1):
+            metric_str = f"{m.best_metric_name}={m.best_metric_value:.4f}"
+            f.write(f"| {rank} | {m.folder_name} | {m.params:,} | {metric_str} | {elapsed:.1f}s |\n")
         f.write(f"\n*Generated by `netgen benchmark`*\n")
 
     # ── Loss curve chart (best effort; requires matplotlib) ──
-    curve_path = _plot_benchmark_curves(results, directory)
+    curve_results = [{'model': m, 'elapsed': el} for m, el, ok in ok_results]
+    curve_path = _plot_benchmark_curves(curve_results, directory)
     if curve_path:
         with open(report_path, 'a', encoding='utf-8') as f:
             f.write(f"\n## Loss Curves\n\n![benchmark curves]({os.path.basename(curve_path)})\n")
