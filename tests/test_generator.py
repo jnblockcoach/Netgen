@@ -131,3 +131,31 @@ def _params_of(folder):
     import re
     readme = open(os.path.join(folder, "README.md")).read()
     return int(re.search(r"\*\*Parameters\*\*:\s*([\d,]+)", readme).group(1).replace(",", ""))
+
+
+def test_standard_tier_scheduler_guard(scratch):
+    """SCHEDULER='none' (default) must not call scheduler.step()."""
+    from netgen import find_candidates
+    from netgen.generator import gen_folder
+    c = find_candidates(80_000, 120_000, 1, seed=4, arch_filter=['mlp'])[0]
+    desc, code, params, inp, outp, mtype = c
+    folder = gen_folder(scratch, 1, desc, code, "M{}", params, inp, outp,
+                        mtype, device_priority=['cpu'])
+    train = open(os.path.join(folder, 'train.py'), encoding='utf-8').read()
+    assert 'scheduler=None' in train
+    assert 'if scheduler is not None: scheduler.step(loss_val)' in train
+    assert 'scheduler.step(loss_val)' not in train.replace(
+        'if scheduler is not None: scheduler.step(loss_val)', '')
+
+
+def test_val_split_denominator_uses_train_subset(scratch):
+    """Epoch-end validation divides by the training subset, not len(ds)."""
+    from netgen import find_candidates
+    from netgen.generator import gen_folder
+    c = find_candidates(5000, 20000, 1, seed=4, arch_filter=['mlp'])[0]
+    desc, code, params, inp, outp, mtype = c
+    folder = gen_folder(scratch, 1, desc, code, "M{}", params, inp, outp,
+                        mtype, device_priority=['cpu'])
+    train = open(os.path.join(folder, 'train.py'), encoding='utf-8').read()
+    assert '/len(_train_ds)' in train
+    assert ')/len(ds)' not in train.replace(')/len(_train_ds)', '')

@@ -109,39 +109,48 @@ def _parse_model(path: str, index: int, folder_name: str) -> ModelInfo:
             # Best metric from log. Validation metrics (added by the
             # val-split training templates) are preferred — they rank
             # generalization instead of train-set overfitting.
+            def _clean(vals):
+                """Drop NaN values (models without val metrics log NaN)."""
+                return [v for v in vals if v == v]
+
             if any('val_loss' in h or 'val_acc' in h for h in info.history):
                 if any('val_acc' in h for h in info.history):
-                    info.best_metric_name = 'val_acc'
-                    info.best_metric_value = max(
-                        (h.get('val_acc', h.get('accuracy', 0)) for h in info.history),
-                        default=None)
-                else:
-                    info.best_metric_name = 'val_loss'
-                    info.best_metric_value = min(
-                        (h.get('val_loss', h.get('loss', float('inf'))) for h in info.history),
-                        default=None)
-            elif 'Accuracy' in log_text or 'accuracy' in log_text.lower() or 'Acc' in log_text:
+                    vals = _clean(h.get('val_acc', h.get('accuracy', 0))
+                                  for h in info.history)
+                    if vals:
+                        info.best_metric_name = 'val_acc'
+                        info.best_metric_value = max(vals)
+                if info.best_metric_name != 'val_acc':
+                    vals = _clean(h.get('val_loss', h.get('loss', float('inf')))
+                                  for h in info.history)
+                    if vals:
+                        info.best_metric_name = 'val_loss'
+                        info.best_metric_value = min(vals)
+            if not info.best_metric_name and ('Accuracy' in log_text
+                                              or 'accuracy' in log_text.lower()
+                                              or 'Acc' in log_text):
                 info.best_metric_name = 'accuracy'
                 info.best_metric_value = max(
-                    (h.get('accuracy', h.get('acc', 0)) for h in info.history),
+                    _clean(h.get('accuracy', h.get('acc', 0)) for h in info.history),
                     default=None
                 )
-            elif 'Recon' in log_text:
+            elif not info.best_metric_name and 'Recon' in log_text:
                 info.best_metric_name = 'recon_loss'
                 info.best_metric_value = min(
-                    (h.get('recon_loss', h.get('loss', float('inf'))) for h in info.history),
+                    _clean(h.get('recon_loss', h.get('loss', float('inf'))) for h in info.history),
                     default=None
                 )
-            elif 'G Loss' in log_text or 'g_loss' in log_text:
+            elif not info.best_metric_name and ('G Loss' in log_text or 'g_loss' in log_text):
                 info.best_metric_name = 'g_loss'
                 info.best_metric_value = min(
-                    (h.get('g_loss', h.get('loss', float('inf'))) for h in info.history),
+                    _clean(h.get('g_loss', h.get('loss', float('inf'))) for h in info.history),
                     default=None
                 )
-            else:
+            elif not info.best_metric_name:
                 info.best_metric_name = 'loss'
                 info.best_metric_value = min(
-                    (h.get('loss', float('inf'))) for h in info.history
+                    _clean(h.get('loss', float('inf')) for h in info.history),
+                    default=None
                 )
 
     return info
@@ -170,7 +179,9 @@ def _parse_log(text: str) -> list[dict]:
                     for i, h in enumerate(headers[1:], 1):
                         if i < len(parts) and parts[i]:
                             try:
-                                entry[h] = float(parts[i])
+                                val = float(parts[i])
+                                if val == val:  # drop NaN (no val metric logged)
+                                    entry[h] = val
                             except ValueError:
                                 pass
                     history.append(entry)
@@ -273,10 +284,12 @@ def compare_models(directory: str, sort_by: str = 'params', top_n: int = None,
     if not models:
         return f"No models found in {directory}"
 
-    # Only trained models for metric-based sorting
-    if sort_by in ('accuracy', 'acc', 'loss', 'recon_loss'):
+    # Only trained models for metric-based sorting.
+    # Higher-is-better: accuracy, acc, val_acc. Lower-is-better: the rest.
+    if sort_by in ('accuracy', 'acc', 'loss', 'recon_loss',
+                   'val_acc', 'val_loss', 'g_loss', 'd_loss'):
         models = [m for m in models if m.best_metric_value is not None]
-        if sort_by in ('accuracy', 'acc'):
+        if sort_by in ('accuracy', 'acc', 'val_acc'):
             models.sort(key=lambda m: m.best_metric_value or 0, reverse=True)
         else:
             models.sort(key=lambda m: m.best_metric_value or float('inf'))
@@ -530,7 +543,7 @@ def sweep_model(directory: str, identifier: str, epochs: int = 5,
 
     def _key(r):
         name, val = r['metric']
-        return val if name in ('loss', 'recon_loss', 'g_loss', 'd_loss') else -val
+        return val if name in ('loss', 'recon_loss', 'g_loss', 'd_loss', 'val_loss') else -val
     ok.sort(key=_key)
     best = ok[0]
 
@@ -614,6 +627,8 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     models = scan_models(directory)
+    if not models:
+        return f"No models found in {directory}"
     todo = list(models) if force else [m for m in models if m.status == 'generated']
 
     if not todo:
@@ -700,11 +715,13 @@ def benchmark_models(directory: str, epochs: int = 10, lr: float = None,
     if not ok_results:
         return "\nNo models completed training."
 
+    _LOWER_BETTER = ('loss', 'recon_loss', 'g_loss', 'd_loss', 'val_loss')
+
     def _sort_key(item):
         m = item[0]
         nm = m.best_metric_name or 'loss'
         val = m.best_metric_value or 0
-        if nm in ('loss', 'recon_loss', 'g_loss', 'd_loss'):
+        if nm in _LOWER_BETTER:
             return val
         return -val
     ok_results.sort(key=_sort_key)

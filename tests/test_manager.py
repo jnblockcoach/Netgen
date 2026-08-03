@@ -168,3 +168,37 @@ def test_sweep_updates_config(scratch):
 def test_sweep_unknown_model(scratch):
     out = sweep_model(scratch, "999")
     assert "not found" in out
+
+
+def test_best_metric_falls_back_when_val_all_nan(scratch):
+    """Models without val metrics (e.g. GCN) log NaN in val columns."""
+    folder = _make_model(scratch)
+    with open(os.path.join(folder, 'training_log.md'), 'w', encoding='utf-8') as f:
+        f.write("| Epoch | Loss | Accuracy | Val Loss | Val Acc |\n"
+                "|-------|------|----------|----------|--------|\n"
+                "|     0 | 0.5 | 0.30 | nan | nan |\n"
+                "|     1 | 0.4 | 0.35 | nan | nan |\n")
+    m = scan_models(scratch)[0]
+    assert m.best_metric_name == 'accuracy' and m.best_metric_value == 0.35
+    # no NaN anywhere (JSON-export safe)
+    for h in m.history:
+        for v in h.values():
+            assert v == v
+
+
+def test_benchmark_empty_dir_message(scratch):
+    out = benchmark_models(scratch, epochs=1)
+    assert "No models found" in out
+
+
+def test_compare_sort_val_metrics(scratch):
+    a = _make_model(scratch, index=1)
+    b = _make_model(scratch, index=2)
+    for folder, acc in ((a, 0.5), (b, 0.9)):
+        with open(os.path.join(folder, 'training_log.md'), 'w', encoding='utf-8') as f:
+            f.write("| Epoch | Loss | Accuracy | Val Loss | Val Acc |\n"
+                    "|-------|------|----------|----------|--------|\n"
+                    f"|     0 | 0.4 | 0.3 | 0.8 | {acc} |\n")
+    out = compare_models(scratch, sort_by='val_acc')
+    lines = [l for l in out.splitlines() if l.strip().startswith('1')]
+    assert 'val_acc=0.9000' in lines[0]  # higher-val-acc model ranks first

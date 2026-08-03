@@ -57,7 +57,7 @@ netgen generate --range 1K-50K --count 3 --dataset cifar10  # 额外支持 vit/m
 `line`。数据集会固定模型输入维度并自动过滤不兼容架构：
 
 - **向量数据集**（iris、wine 等）：监督向量网络（`mlp`、`linear`、`wide`、
-  `deep`、`resblock`、`moe`、`unary`），输入维重写为数据集特征数
+  `deep`、`resblock`、`moe`），输入维重写为数据集特征数
 - **图像数据集**（mnist、cifar10）：2D 网络（`cnn`、`rescnn`、`sepcnn`、
   `densecnn`、`unet`）保持图像形状（`Conv2d(1|3, ...)`）；其余架构使用
   **展平样本**（MNIST → 784 维向量）。`cifar10` 额外允许 RGB 的
@@ -226,7 +226,7 @@ python train.py [选项]
 `mlp` `deep` `wide` `resblock` `highway` `moe` `transformer` `sae`
 
 ### 经典（上限 500万~1000万）— 12 种
-`unary`(a/b/c) `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
+`unary`(a/b/c，固定 1 参数基准——仅 `--range 0-1` 等范围可用) `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
 
 ### 中型（≥ 10万）— 6 种
 `rescnn` `sepcnn` `densecnn` `attnlstm` `selfattn` `gcn`

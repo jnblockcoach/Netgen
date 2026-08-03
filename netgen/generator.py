@@ -317,7 +317,7 @@ def gen_config(input_dim: int, output_dim: int,
         f"PATIENCE = 10                # early stopping patience\n"
         f"GRAD_CLIP = 1.0              # gradient clipping max norm\n"
         f"SEED = 42                    # random seed\n"
-        f"VAL_SPLIT = 0.2              # validation split ratio (0 = no validation)\n"
+        f"VAL_SPLIT = 0.2              # validation split ratio (keeps at least 1 sample)\n"
         f"LOSS_TYPE = '{loss_type}'    # loss function variant\n"
     )
 
@@ -549,6 +549,11 @@ def _inject_val_split(code: str, model_type: str) -> str:
         return code
     code = code.replace(old, _VAL_SPLIT_CODE)
 
+    # 1b. The epoch-end validation pass iterates the TRAIN loader, so its
+    # denominators must use the training subset size, not the full dataset.
+    code = code.replace(')/len(ds)', ')/len(_train_ds)')
+    code = code.replace('correct/len(ds)', 'correct/len(_train_ds)')
+
     # 2. val_history accumulator
     code = code.replace("history=[]\n", "history=[]\nval_history=[]\n")
 
@@ -707,6 +712,11 @@ def _enhance_training_display(code: str) -> str:
             "else:\n"
             "    scheduler=None"
         )
+    )
+    # scheduler.step() must not run when SCHEDULER='none' (scheduler=None)
+    code = code.replace(
+        'scheduler.step(loss_val)',
+        'if scheduler is not None: scheduler.step(loss_val)'
     )
     # Replace hardcoded patience with config value
     code = code.replace('PATIENCE=10', 'PATIENCE=PATIENCE')

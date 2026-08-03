@@ -80,3 +80,17 @@ def test_archs_list(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "Total: 31 architectures" in out
+
+
+def test_generate_range_with_suffixes():
+    from netgen.cli import _parse_range
+    assert _parse_range('5K-20K') == (5000, 20000)
+    assert _parse_range('0.5M-1M') == (500_000, 1_000_000)
+    assert _parse_range('2B-4B') == (2_000_000_000, 4_000_000_000)
+
+
+def test_generate_count_zero_rejected(scratch, capsys):
+    rc = run(["generate", "--range", "5000-20000", "--count", "0",
+              "--arch", "mlp", "-o", os.path.join(scratch, "m")])
+    assert rc == 1
+    assert "count" in capsys.readouterr().err

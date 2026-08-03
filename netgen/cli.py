@@ -80,12 +80,32 @@ _PRESETS = {
 
 # ── Helpers ──
 
+_SUFFIXES = {'k': 1_000, 'm': 1_000_000, 'b': 1_000_000_000}
+
+
+def _parse_num(raw: str) -> int:
+    """Parse '10000', '10k', '1.5M', '2B' into an int."""
+    s = raw.strip().lower()
+    mult = 1
+    for suffix, factor in _SUFFIXES.items():
+        if s.endswith(suffix):
+            mult = factor
+            s = s[:-1]
+            break
+    try:
+        return int(float(s) * mult)
+    except ValueError:
+        raise ValueError(f"Invalid number '{raw}'.")
+
+
 def _parse_range(range_str: str) -> tuple[int, int]:
     try:
         lo_str, hi_str = range_str.split("-")
-        lo, hi = int(lo_str), int(hi_str)
-    except ValueError:
-        raise ValueError(f"Invalid range format: '{range_str}'. Expected e.g. '10000-20000'.")
+        lo, hi = _parse_num(lo_str), _parse_num(hi_str)
+    except ValueError as e:
+        if str(e).startswith('Invalid number'):
+            raise
+        raise ValueError(f"Invalid range format: '{range_str}'. Expected e.g. '10000-20000' or '10k-50k'.")
     if lo < 0 or hi < 0:
         raise ValueError("Parameter range bounds must be non-negative.")
     if lo >= hi:
@@ -165,6 +185,10 @@ def _cmd_generate(args):
         lo, hi = _parse_range(args.range)
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.count < 1:
+        print("Error: --count must be >= 1.", file=sys.stderr)
         return 1
 
     arch_filter = _resolve_arch_filter(args, args.dataset)
@@ -305,8 +329,19 @@ def _cmd_monitor(args):
 # ── Subcommand: sweep ──
 
 def _cmd_sweep(args):
-    lrs = [float(x) for x in args.lrs.split(',')] if args.lrs else None
-    batches = [int(x) for x in args.batches.split(',')] if args.batches else None
+    try:
+        lrs = [float(x) for x in args.lrs.split(',') if x.strip()] if args.lrs else None
+        batches = [int(x) for x in args.batches.split(',') if x.strip()] if args.batches else None
+    except ValueError:
+        print("Error: --lrs/--batches must be comma-separated numbers, "
+              "e.g. '0.001,0.01' / '64,128'.", file=sys.stderr)
+        return 1
+    if lrs is not None and not lrs:
+        print("Error: --lrs must contain at least one value.", file=sys.stderr)
+        return 1
+    if batches is not None and not batches:
+        print("Error: --batches must contain at least one value.", file=sys.stderr)
+        return 1
     print(sweep_model(args.dir, args.id, args.epochs, lrs, batches,
                       args.device, args.seed))
 
@@ -449,8 +484,10 @@ def build_parser() -> argparse.ArgumentParser:
                          description="Sort and compare models by parameters or best metric.")
     cmp.add_argument("--dir", "-d", default="./generated_models", help="Models directory.")
     cmp.add_argument("--sort", "-s", default="params",
-                     choices=["params", "accuracy", "loss", "recon_loss"],
-                     help="Sort by (default: params).")
+                     choices=["params", "accuracy", "loss", "recon_loss",
+                              "val_acc", "val_loss"],
+                     help="Sort by: params | accuracy | loss | recon_loss | "
+                          "val_acc | val_loss (default: params).")
     cmp.add_argument("--top", "-n", type=int, default=None, help="Show only top N models.")
 
     # netgen clean

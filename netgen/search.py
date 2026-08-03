@@ -413,7 +413,10 @@ def _sample_vit(lo: int, hi: int) -> Optional[Candidate]:
 def _sample_unet(lo: int, hi: int) -> Optional[Candidate]:
     in_ch = random.choice([1, 3])
     base_ch = _rand_in_range(8, min(128, int(hi ** 0.3)), 128)
-    ns = _rand_in_range(2, min(5, int(hi ** 0.1)), 6)
+    # MaxPool2d(2) downsampling: the template's synthetic data is 8x8,
+    # which only supports up to 3 pooling stages (8->4->2->1); more would
+    # pool a 1x1 map to 0x0 and crash at runtime.
+    ns = _rand_in_range(2, min(3, int(hi ** 0.1)), 3)
     params = 0
     prev_ch = in_ch
     ch = base_ch

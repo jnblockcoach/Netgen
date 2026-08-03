@@ -60,7 +60,7 @@ netgen generate --range 1K-50K --count 3 --dataset cifar10  # adds vit/mixer
 and incompatible architectures are filtered automatically:
 
 - **Vector datasets** (iris, wine, ...): supervised vector nets (`mlp`,
-  `linear`, `wide`, `deep`, `resblock`, `moe`, `unary`) — inputs rewritten
+  `linear`, `wide`, `deep`, `resblock`, `moe`) — inputs rewritten
   to the dataset's feature count.
 - **Image datasets** (mnist, cifar10): 2-D nets (`cnn`, `rescnn`, `sepcnn`,
   `densecnn`, `unet`) keep the image shape (`Conv2d(1|3, ...)`); everything
@@ -247,7 +247,7 @@ Architecture-specific config: VAE has `BETA`, GAN has `G_LR`/`D_LR`, Contrastive
 
 | Dataset | Auto-selected Architectures |
 |---------|----------------------------|
-| iris, wine, breast_cancer, moons, circles, blobs | `linear` `mlp` `wide` `deep` `resblock` `moe` `unary` |
+| iris, wine, breast_cancer, moons, circles, blobs | `linear` `mlp` `wide` `deep` `resblock` `moe` |
 | line | same as above (regression) |
 | mnist | 2-D: `cnn` `rescnn` `sepcnn` `densecnn` `unet` + flat: same as above |
 | cifar10 | mnist set + `vit` `mixer` |
@@ -262,7 +262,7 @@ Architecture-specific config: VAE has `BETA`, GAN has `G_LR`/`D_LR`, Contrastive
 
 ### Classic (up to 5M–10M) — 12
 
-`unary` (a/b/c) `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
+`unary` (a/b/c; fixed 1-param baseline — only sample-able with `--range 0-1` or similar) `linear` `cnn` `lstm` `gru` `bilstm` `ae` `vae` `gan` `multitask` `contrastive` `siamese`
 
 ### Medium (≥ 100K) — 6
 

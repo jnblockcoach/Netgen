@@ -71,3 +71,11 @@ def test_sorted_by_params():
 def test_negative_range_rejected():
     with pytest.raises(ValueError):
         find_candidates(-10, 100, 1)
+
+
+def test_unet_pool_stages_limited(seed=7):
+    """MaxPool2d chain must not exceed 3 stages (8x8 template data)."""
+    import re
+    c = find_candidates(50_000, 20_000_000, 5, seed=seed, arch_filter=['unet'])
+    for desc, code, *_ in c:
+        assert code.count('MaxPool2d') <= 3, desc
