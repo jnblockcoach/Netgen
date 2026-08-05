@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# NetGen TUI 启动器 — 用能导入 netgen 的解释器运行图形化命令行管理器
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PYTHON="${NETGEN_PYTHON:-}"
+if [[ -z "$PYTHON" ]]; then
+  for cand in "$ROOT/.venv/bin/python" "$ROOT/venv/bin/python" \
+              "$ROOT/.python/bin/python" "$ROOT/../venv/bin/python" python3; do
+    if command -v "$cand" >/dev/null 2>&1 \
+       && "$cand" -c "import sys; sys.path.insert(0, '$ROOT'); import netgen" >/dev/null 2>&1; then
+      PYTHON="$cand"; break
+    fi
+  done
+fi
+[[ -n "$PYTHON" ]] || PYTHON=python3
+exec "$PYTHON" "$ROOT/manager/tui.py" "$@"

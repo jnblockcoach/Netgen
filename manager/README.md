@@ -1,7 +1,50 @@
-# NetGen 管理器（bash）
+# NetGen 管理器
 
-独立的 bash 管理器，内置指令，用于管理 NetGen 生成的模型。
-与 Python CLI 完全分离（独立文件夹，不影响 `netgen` 包本身）。
+独立的模型管理器（独立文件夹，不影响 `netgen` 包本身），提供两种形态：
+
+1. **`netgen.sh`** — 纯 bash 管理器（内置指令，零额外依赖）
+2. **`tui.py`** — 图形化命令行（textual 面板/表格/快捷键/命令栏）
+
+---
+
+## TUI 图形化管理器
+
+```bash
+pip install textual          # 依赖（已加入生成模型的 requirements.txt）
+./manager/netgen-tui         # 启动（或: python manager/tui.py）
+NETGEN_DIR=/data/models ./manager/netgen-tui
+```
+
+界面：左侧模型表格（ID/架构/参数/数据集/状态/最佳指标）+ 右侧详情面板
+（配置与训练日志尾部）+ 底部日志区（子进程实时输出）+ 底部命令栏。
+
+**快捷键**：`r` 刷新 · `Enter` 详情 · `g` 生成（对话框）· `t` 训练 ·
+`e` 评估 · `s` 超参搜索 · `b` 对比训练 · `m` 资源采样 · `c` 清理 · `q` 退出
+
+**命令栏内置指令**（底部 `>` 输入）：
+
+```
+list                        刷新列表
+train <id> [--epochs N]     训练（默认 1 epoch，避免误跑大模型）
+eval <id>                   评估
+sweep <id> [--lrs ...]      超参搜索
+generate --range 5K-50K --count 5 [--arch mlp,cnn] [--dataset iris]
+benchmark [--workers N]     一键对比训练
+monitor                     资源占用采样（--once）
+clean [--force]             清理（默认 dry-run）
+export [--format md]        导出报告
+archs / help / quit
+```
+
+训练/生成/评估全部在后台异步执行，输出实时滚动到日志区；任务结束后
+自动刷新表格。默认 `train` 只跑 1 epoch（安全默认，避免误跑大模型）。
+
+---
+
+## bash 管理器（`netgen.sh`）
+
+独立 bash 脚本，内置指令，用于管理 NetGen 生成的模型。
+与 Python CLI 完全分离。
 
 ## 快速开始
 
