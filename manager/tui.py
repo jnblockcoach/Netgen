@@ -36,7 +36,8 @@ PYTHON = sys.executable
 RUNPY = os.path.join(ROOT, "run.py")
 
 sys.path.insert(0, ROOT)
-from netgen.manager import scan_models, ModelInfo  # noqa: E402
+from netgen.manager import (scan_models, read_config, update_config,
+                            ModelInfo)  # noqa: E402
 
 
 HELP_TEXT = """\
@@ -51,13 +52,17 @@ NetGen TUI — 图形化命令行管理器
   g        生成（对话框）  t        训练选中（默认 1 epoch）
   e        评估选中        s        超参搜索选中（1 epoch）
   b        对比训练        m        资源占用采样
-  c        清理（确认）    q        退出
+  c        清理（确认）    o        训练参数（写回 config.py）
+  q        退出
 
 【命令栏指令】
   list / ls                    刷新列表
   sort <key>                   按列排序: params|loss|val_acc|val_loss|acc
                                 |index|params|dataset|status
   info <id>                    查看详情（右侧面板）
+  params <id> [KEY=VALUE ...]  调整训练参数（表单或直接赋值，
+                               如: params 001 EPOCHS=50 LR=0.01）
+  cfg <id>                     查看当前 config.py
   train <id> [--epochs N] [--lr X] [--batch-size N] [--device ...] [--seed N]
   eval <id>                    评估
   sweep <id> [--epochs N] [--lrs ...] [--batches ...] [--device ...]
@@ -84,6 +89,88 @@ NetGen TUI — 图形化命令行管理器
 
 
 # ── 对话框 ────────────────────────────────────────────────────────────
+
+class TrainParamsScreen(ModalScreen):
+    """训练参数调整：读 config.py 现值，可保存并训练/仅保存/取消。"""
+
+    def __init__(self, folder_path: str, **kwargs):
+        super().__init__(**kwargs)
+        self.folder_path = folder_path
+        self.cfg = read_config(os.path.join(folder_path, "config.py"))
+
+    BINDINGS = [("escape", "dismiss(None)", "取消")]
+
+    def compose(self) -> ComposeResult:
+        c = self.cfg
+        yield Static("训练参数（写回 config.py）", classes="dlg-title")
+        yield Label(f"Epochs（当前 {c.get('EPOCHS', 30)}）:")
+        yield Input(placeholder=str(c.get('EPOCHS', 30)), id="p-epochs")
+        yield Label(f"学习率 LR（当前 {c.get('LR', 0.001)}）:")
+        yield Input(placeholder=str(c.get('LR', 0.001)), id="p-lr")
+        yield Label(f"Batch Size（当前 {c.get('BATCH_SIZE', 64)}）:")
+        yield Input(placeholder=str(c.get('BATCH_SIZE', 64)), id="p-batch")
+        yield Label(f"优化器（当前 {c.get('OPTIMIZER', 'adam')}; adam/sgd/adamw）:")
+        yield Input(placeholder=str(c.get('OPTIMIZER', 'adam')), id="p-opt")
+        yield Label(f"调度器（当前 {c.get('SCHEDULER', 'none')}; none/cosine/plateau/step）:")
+        yield Input(placeholder=str(c.get('SCHEDULER', 'none')), id="p-sched")
+        yield Label(f"Weight Decay（当前 {c.get('WEIGHT_DECAY', 0.0)}）:")
+        yield Input(placeholder=str(c.get('WEIGHT_DECAY', 0.0)), id="p-wd")
+        yield Label(f"Seed（当前 {c.get('SEED', 42)}）:")
+        yield Input(placeholder=str(c.get('SEED', 42)), id="p-seed")
+        yield Label(f"设备优先级（当前 {c.get('DEVICE_PRIORITY', ['cuda', 'mps'])}; 如 cuda,mps / cpu）:")
+        yield Input(placeholder="cpu", id="p-device")
+        yield Horizontal(
+            Button("保存并训练", variant="primary", id="p-train"),
+            Button("仅保存", id="p-save"),
+            Button("取消", id="p-cancel"), classes="dlg-btns")
+
+    def _overrides(self) -> dict:
+        o = {}
+        ints = {"EPOCHS": "p-epochs", "BATCH_SIZE": "p-batch", "SEED": "p-seed"}
+        floats = {"LR": "p-lr", "WEIGHT_DECAY": "p-wd"}
+        for key, wid in ints.items():
+            v = self.query_one(f"#{wid}", Input).value.strip()
+            if v:
+                try:
+                    o[key] = int(v)
+                except ValueError:
+                    self.notify(f"{key} 必须是整数", severity="error")
+                    return None
+        for key, wid in floats.items():
+            v = self.query_one(f"#{wid}", Input).value.strip()
+            if v:
+                try:
+                    o[key] = float(v)
+                except ValueError:
+                    self.notify(f"{key} 必须是数字", severity="error")
+                    return None
+        for key, wid in (("OPTIMIZER", "p-opt"), ("SCHEDULER", "p-sched")):
+            v = self.query_one(f"#{wid}", Input).value.strip()
+            if v:
+                o[key] = v
+        dev = self.query_one("#p-device", Input).value.strip()
+        if dev:
+            o["DEVICE_PRIORITY"] = [d.strip() for d in dev.split(",") if d.strip()]
+        return o
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "p-cancel":
+            self.dismiss(None)
+            return
+        o = self._overrides()
+        if o is None:
+            return
+        if bid == "p-save":
+            self.dismiss(("save", o))
+        elif bid == "p-train":
+            self.dismiss(("train", o))
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        o = self._overrides()
+        if o is not None:
+            self.dismiss(("train", o))
+
 
 class GenerateScreen(ModalScreen):
     """生成参数表单（常用项 + 高级项）。"""
@@ -206,6 +293,7 @@ class NetGenTui(App):
         Binding("b", "benchmark", "对比训练"),
         Binding("m", "monitor", "资源采样"),
         Binding("c", "clean", "清理"),
+        Binding("o", "params", "训练参数"),
         Binding("ctrl+e", "focus_cmd", "命令栏"),
         Binding("escape", "focus_table", "表格"),
         Binding("q", "quit", "退出"),
@@ -472,6 +560,32 @@ class NetGenTui(App):
                    "--epochs", "1", "--lrs", "0.001,0.01", "--batches", "64",
                    "--device", "cpu"])
 
+    def action_params(self) -> None:
+        """调整选中模型的训练参数（写回 config.py）。"""
+        ident = self._selected_id()
+        if ident is None:
+            return
+        m = self._find_model(ident)
+        if m is None:
+            return
+        self.push_screen(TrainParamsScreen(m.folder_path),
+                         lambda r: self._on_params_done(ident, r))
+
+    def _on_params_done(self, ident: str, result) -> None:
+        if not result:
+            return
+        mode, overrides = result
+        m = self._find_model(ident)
+        if m is None:
+            return
+        changed = update_config(os.path.join(m.folder_path, "config.py"),
+                                **overrides)
+        if changed:
+            self._log(f"已更新 {ident} 参数: " +
+                      ", ".join(f"{k}={v}" for k, v in changed.items()))
+        if mode == "train":
+            self._train_id(ident, [])
+
     def action_generate(self) -> None:
         self.push_screen(GenerateScreen(), self._on_generate_done)
 
@@ -561,6 +675,20 @@ class NetGenTui(App):
                           "[--batch-size N] [--device ...] [--seed N]")
                 return
             self._train_id(args[0], args[1:])
+        elif cmd in ("params", "options", "opts"):
+            # params <id> 打开图形化参数调整；params <id> KEY=VALUE ... 直接设置
+            ident = args[0] if args else self._selected_id()
+            m = self._find_model(ident) if ident else None
+            if m is None:
+                self._log(f"用法: params <id> [KEY=VALUE ...] 或直接按 o 打开表单")
+                return
+            kv = [a for a in args[1:] if "=" in a]
+            if kv:
+                from netgen.manager import set_model_params
+                self._log(set_model_params(self.models_dir, ident, **dict(
+                    k.split("=", 1) for k in kv)))
+            else:
+                self.action_params()
         elif cmd == "eval":
             ident = args[0] if args else self._selected_id()
             m = self._find_model(ident) if ident else None
@@ -609,6 +737,25 @@ class NetGenTui(App):
         elif cmd == "export":
             self._run([PYTHON, RUNPY, "export", "--dir", self.models_dir]
                       + args)
+        elif cmd in ("cfg", "config"):
+            ident = args[0] if args else self._selected_id()
+            m = self._find_model(ident) if ident else None
+            if m is None:
+                self._log("用法: cfg <id> 查看当前 config.py")
+                return
+            cfg_path = os.path.join(m.folder_path, "config.py")
+            if not os.path.exists(cfg_path):
+                self._log(f"✗ {ident} 没有 config.py")
+                return
+            vals = read_config(cfg_path)
+            shown = {k: vals[k] for k in
+                     ("EPOCHS", "LR", "BATCH_SIZE", "OPTIMIZER",
+                      "SCHEDULER", "WEIGHT_DECAY", "SEED",
+                      "DEVICE_PRIORITY", "DATASET", "INPUT_DIM",
+                      "OUTPUT_DIM") if k in vals}
+            self._log(f"  {ident} 训练参数:")
+            for k, v in shown.items():
+                self._log(f"    {k} = {v}")
         elif cmd == "ps":
             self._cmd_ps()
         elif cmd == "deps":

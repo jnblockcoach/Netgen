@@ -192,6 +192,120 @@ def _parse_log(text: str) -> list[dict]:
     return history
 
 
+def read_config(config_path: str) -> dict:
+    """Parse simple `KEY = value` lines from a config.py into a dict.
+
+    Strings are unquoted, numbers converted, comments ignored.
+    """
+    values = {}
+    try:
+        lines = open(config_path, encoding='utf-8').read().splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        m = re.match(r'^([A-Z_][A-Z0-9_]*)\s*=\s*(.+?)\s*(?:#.*)?$', line)
+        if not m:
+            continue
+        key, raw = m.group(1), m.group(2).strip()
+        if (raw.startswith("'") and raw.endswith("'")) or \
+           (raw.startswith('"') and raw.endswith('"')):
+            values[key] = raw[1:-1]
+        elif raw.startswith('[') and raw.endswith(']'):  # list like ['cuda','mps']
+            values[key] = [s.strip().strip("'\"").strip('\"')
+                           for s in raw[1:-1].split(',') if s.strip()]
+        else:
+            try:
+                values[key] = int(raw)
+            except ValueError:
+                try:
+                    values[key] = float(raw)
+                except ValueError:
+                    values[key] = raw
+    return values
+
+
+def update_config(config_path: str, **overrides) -> dict:
+    """Rewrite `KEY = value` lines in config.py, preserving comments.
+
+    Returns the dict of keys that were actually changed.
+    """
+    if not overrides:
+        return {}
+    try:
+        lines = open(config_path, encoding='utf-8').read().splitlines(keepends=True)
+    except OSError:
+        return {}
+    changed = {}
+    for i, line in enumerate(lines):
+        m = re.match(r'^([A-Z_][A-Z0-9_]*)\s*=', line)
+        if not m or m.group(1) not in overrides:
+            continue
+        key = m.group(1)
+        new_val = overrides[key]
+        comment = ''
+        cm = re.search(r'(\s*#.*)$', line)
+        if cm:
+            comment = cm.group(1)
+        if isinstance(new_val, bool):
+            rendered = 'True' if new_val else 'False'
+        elif isinstance(new_val, str):
+            rendered = f"'{new_val}'"
+        elif isinstance(new_val, (list, tuple)):
+            rendered = "[" + ', '.join(f"'{v}'" for v in new_val) + "]"
+        else:
+            rendered = repr(new_val)
+        lines[i] = f"{key} = {rendered}{comment}\n"
+        changed[key] = new_val
+    if changed:
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+    return changed
+
+
+def _coerce_config_value(key: str, v):
+    """Coerce CLI-supplied strings to proper config.py types.
+
+    '50' -> 50, '0.01' -> 0.01, 'adamw' -> 'adamw',
+    'cuda,mps' -> ['cuda', 'mps'] for DEVICE_PRIORITY.
+    """
+    if not isinstance(v, str):
+        return v
+    if key == 'DEVICE_PRIORITY':
+        return [s.strip() for s in v.split(',') if s.strip()]
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
+def set_model_params(directory: str, identifier: str,
+                     **overrides) -> str:
+    """Adjust a model's training hyperparameters in its config.py.
+
+    Usage (TUI command bar / CLI):
+        set_model_params('.', '001', EPOCHS=50, LR=0.01, OPTIMIZER='adamw')
+    """
+    overrides = {k: _coerce_config_value(k, v) for k, v in overrides.items()}
+    model = _find_model(scan_models(directory), identifier)
+    if model is None:
+        return f"Model not found: {identifier}"
+    config_path = os.path.join(model.folder_path, 'config.py')
+    if not os.path.exists(config_path):
+        return f"No config.py in {model.folder_name}"
+    changed = update_config(config_path, **overrides)
+    if not changed:
+        return f"No recognized keys changed in {model.folder_name}"
+    current = read_config(config_path)
+    summary = ", ".join(f"{k}={current.get(k, v)}"
+                        for k, v in changed.items())
+    return f"{model.folder_name}: updated {summary}"
+
+
 def list_models(directory: str) -> str:
     """Generate a formatted table of all models."""
     models = scan_models(directory)

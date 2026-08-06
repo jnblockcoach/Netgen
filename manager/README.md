@@ -79,7 +79,7 @@ archs / help / quit
 | `archs` | | 列出架构 |
 | `ps` | | 查看运行中的训练进程（bash 原生） |
 | `logs <id>` | `log` | 最近训练日志（bash 原生 tail） |
-| `config <id>` | `cfg` | 查看模型配置（bash 原生 cat） |
+| `config <id>` | `cfg` | 查看/修改模型配置（`set EPOCHS=50 LR=0.01` 写回保留注释；`edit` 打开 `$EDITOR`） |
 | `deps` | | 依赖检查（bash 原生探测） |
 | `version` | `-v` | 版本信息 |
 

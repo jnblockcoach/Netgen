@@ -6,8 +6,9 @@ import sys
 from netgen import find_candidates, gen_folder
 from netgen.manager import (benchmark_models, clean_models, compare_models,
                             eval_model, export_models, info_model,
-                            list_models, scan_models, sweep_model,
-                            train_model, _parse_log)
+                            list_models, read_config, scan_models,
+                            set_model_params, sweep_model, train_model,
+                            _parse_log)
 
 
 def _make_model(scratch, index=1, params_range=(5000, 20000), seed=7):
@@ -202,3 +203,27 @@ def test_compare_sort_val_metrics(scratch):
     out = compare_models(scratch, sort_by='val_acc')
     lines = [l for l in out.splitlines() if l.strip().startswith('1')]
     assert 'val_acc=0.9000' in lines[0]  # higher-val-acc model ranks first
+
+
+def test_set_model_params_types(scratch):
+    folder = _make_model(scratch)
+    out = set_model_params(scratch, '1', EPOCHS='50', LR='0.01',
+                           OPTIMIZER='adamw', DEVICE_PRIORITY='cpu')
+    assert 'updated' in out
+    c = read_config(os.path.join(folder, 'config.py'))
+    assert c['EPOCHS'] == 50 and c['LR'] == 0.01
+    assert c['OPTIMIZER'] == 'adamw' and c['DEVICE_PRIORITY'] == ['cpu']
+    # comments preserved
+    content = open(os.path.join(folder, 'config.py'), encoding='utf-8').read()
+    assert 'LR = 0.01' in content and '#' in content.split('LR = 0.01')[1][:20]
+
+
+def test_set_model_params_unknown_key(scratch):
+    _make_model(scratch)
+    out = set_model_params(scratch, '1', NOPE=1)
+    assert 'No recognized keys' in out
+
+
+def test_set_model_params_not_found(scratch):
+    out = set_model_params(scratch, '999', EPOCHS=1)
+    assert 'not found' in out

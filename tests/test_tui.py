@@ -200,3 +200,79 @@ def test_tui_ps_and_deps_commands():
             assert 'torch' in log and 'textual' in log
 
     asyncio.run(_inner())
+
+
+def test_tui_params_dialog_save():
+    """打开参数对话框 → 修改 → 仅保存 → config.py 更新。"""
+    import os
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d, n=1)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 44)) as pilot:
+            app.action_params()
+            await pilot.pause()
+            # 修改学习率字段
+            await pilot.click('#p-lr')
+            await pilot.pause()
+            for _ in range(5):
+                await pilot.press('backspace')
+            await pilot.pause()
+            for ch in '0.05':
+                await pilot.press(ch)
+            await pilot.pause()
+            await pilot.click('#p-save')
+            await pilot.pause()
+            from netgen.manager import read_config
+            import glob
+            cfg = glob.glob(os.path.join(d, '001-*', 'config.py'))[0]
+            c = read_config(cfg)
+            assert c['LR'] == 0.05, c
+            assert '已更新' in '\n'.join(app._log_lines)
+
+    asyncio.run(_inner())
+
+
+def test_tui_cfg_command():
+    import os
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d, n=1)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click('#cmd-input')
+            await pilot.pause()
+            for ch in 'cfg 1':
+                await pilot.press(ch)
+            await pilot.press('enter')
+            await pilot.pause()
+            log = '\n'.join(app._log_lines)
+            assert 'EPOCHS' in log and 'LR' in log and '训练参数' in log
+
+    asyncio.run(_inner())
+
+
+def test_tui_params_command_line_set():
+    """命令栏: params 1 EPOCHS=30 直接写回 config.py。"""
+    import os
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d, n=1)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click('#cmd-input')
+            await pilot.pause()
+            for ch in 'params 1 EPOCHS=30':
+                await pilot.press(ch)
+            await pilot.press('enter')
+            await pilot.pause()
+            from netgen.manager import read_config
+            import glob
+            cfg = glob.glob(os.path.join(d, '001-*', 'config.py'))[0]
+            assert read_config(cfg)['EPOCHS'] == 30
+            assert 'updated' in '\n'.join(app._log_lines)
+
+    asyncio.run(_inner())

@@ -192,11 +192,47 @@ cmd_logs() {
 }
 
 cmd_config() {
-  [[ $# -ge 1 ]] || die "用法: netgen.sh config <id>"
-  local dir; dir="$(model_dir "$1")" || die "找不到模型: $1"
+  [[ $# -ge 1 ]] || die "用法: netgen.sh config <id> [set KEY=VALUE ... | edit]"
+  local id="$1"; shift
+  local dir; dir="$(model_dir "$id")" || die "找不到模型: $id"
   local cfg="$dir/config.py"
   [[ -f "$cfg" ]] || die "无配置文件: $cfg"
-  cat "$cfg"
+  if [[ $# -eq 0 ]]; then
+    cat "$cfg"
+    return 0
+  fi
+  case "$1" in
+    set)
+      shift
+      [[ $# -ge 1 ]] || die "用法: config <id> set EPOCHS=50 LR=0.01 ..."
+      for a in "$@"; do
+        [[ "$a" == *=* ]] || die "无效键值: $a（应为 KEY=VALUE）"
+      done
+      # 交给 netgen 的 set_model_params（保留注释格式）
+      local err rc
+      err="$("$PYTHON" - "$ROOT" "$MODELS_DIR" "$id" "$@" 2>&1 <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+from netgen.manager import set_model_params
+over = dict(k.split('=', 1) for k in sys.argv[4:])
+print(set_model_params(sys.argv[2], sys.argv[3], **over))
+PYEOF
+)"
+      rc=$?
+      if [[ $rc -eq 0 ]]; then
+        echo "$err"
+      else
+        die "参数更新失败: $err"
+      fi
+      ;;
+    edit)
+      ${EDITOR:-vi} "$cfg"
+      echo "已保存 $cfg"
+      ;;
+    *)
+      die "用法: config <id> [set KEY=VALUE ... | edit]"
+      ;;
+  esac
 }
 
 cmd_deps() {
