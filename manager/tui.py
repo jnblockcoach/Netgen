@@ -1,32 +1,34 @@
 #!/usr/bin/env python3
 """NetGen TUI — 图形化命令行管理器（textual）
 
-在终端里以面板/表格/快捷键方式管理模型：
-  - 左侧表格：全部模型（ID/架构/参数/数据集/状态/最佳指标）
-  - 右侧详情：选中模型的配置摘要与训练日志
-  - 底部命令栏：内置指令（train/eval/sweep/generate/benchmark/...）
-  - 底部日志区：训练/操作实时输出
+终端面板式管理：
+  - 左侧表格：全部模型（ID/架构/参数/数据集/状态/最佳指标/Tier）
+  - 右侧详情：选中模型的配置摘要与训练日志尾部
+  - 底部命令栏：内置指令（train/eval/sweep/generate/benchmark/compare/
+    monitor/clean/export/archs/ps/deps/sort/help/quit）
+  - 底部日志区：子进程实时输出
+
+焦点规则（重要）：
+  - 表格聚焦时，单键快捷键生效（r/g/t/e/s/b/m/c/q/Enter）
+  - 命令栏聚焦时输入指令（Ctrl+E 聚焦命令栏，Esc 回到表格）
+  - 启动默认聚焦表格
 
 用法:
     python manager/tui.py [--dir <模型目录>]
     NETGEN_DIR=<目录> python manager/tui.py
-
-快捷键: r 刷新 · Enter 详情 · g 生成 · t 训练 · e 评估 · s 超参搜索
-        b 对比训练 · m 资源采样 · c 清理 · q 退出
 """
 import asyncio
 import os
-import subprocess
 import sys
 from typing import List, Optional
 
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (Button, DataTable, Footer, Header, Input, Label,
-                             Log, Static)
+                             Static)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 MODELS_DIR = os.environ.get("NETGEN_DIR", os.path.join(ROOT, "generated_models"))
@@ -37,42 +39,54 @@ sys.path.insert(0, ROOT)
 from netgen.manager import scan_models, ModelInfo  # noqa: E402
 
 
-# ── 帮助信息 ────────────────────────────────────────────────────────────
-
 HELP_TEXT = """\
 NetGen TUI — 图形化命令行管理器
 
-【快捷键】
-  r / F5    刷新模型列表        Enter    查看选中模型详情
-  g         生成模型             t       训练选中模型
-  e         评估选中模型         s       超参搜索选中模型
-  b         对比训练             m       资源占用采样(monitor --once)
-  c         清理模型             q       退出
+【焦点】
+  Ctrl+E   聚焦命令栏      Esc      回到表格
+  表格聚焦 → 单键快捷键生效；命令栏聚焦 → 输入指令
 
-【命令栏指令】（在底部 > 输入，回车执行）
-  list                      刷新列表
-  train <id> [--epochs N]   训练（默认 1 epoch，避免误跑大模型）
-  eval <id>                 评估
-  sweep <id> [--lrs ...]    超参搜索
-  generate --range 5K-50K --count 5 [--arch mlp,cnn] [--dataset iris]
-  benchmark [--workers N]   一键对比训练
-  monitor                   资源占用采样
-  clean [--force]           清理模型
-  export [--format md]      导出报告
-  archs                     架构列表
-  help                      本帮助
-  quit / q                  退出
+【快捷键】（表格聚焦时）
+  r / F5   刷新列表        Enter    查看选中模型详情
+  g        生成（对话框）  t        训练选中（默认 1 epoch）
+  e        评估选中        s        超参搜索选中（1 epoch）
+  b        对比训练        m        资源占用采样
+  c        清理（确认）    q        退出
+
+【命令栏指令】
+  list / ls                    刷新列表
+  sort <key>                   按列排序: params|loss|val_acc|val_loss|acc
+                                |index|params|dataset|status
+  info <id>                    查看详情（右侧面板）
+  train <id> [--epochs N] [--lr X] [--batch-size N] [--device ...] [--seed N]
+  eval <id>                    评估
+  sweep <id> [--epochs N] [--lrs ...] [--batches ...] [--device ...]
+  generate --range 5K-50K --count 5
+      [--arch mlp,cnn] [--preset cv] [--dataset iris|mnist|cifar10]
+      [--device cuda,mps] [--seed N] [--jobs N]
+  benchmark [--epochs N] [--workers N] [--force] [--time-budget MIN]
+            [--device ...] [--retries N]
+  train-all                    训练全部未训练模型（= benchmark）
+  compare [--sort params|val_acc|val_loss] [--top N]
+  monitor [--cpu 70] [--gpu 80] [--memory 60] [--interval 2] [--pid ...]
+  clean [--force] [--keep-best N] [--untrained]   默认 dry-run 预览
+  export [--format md|csv|json] [--output FILE]
+  archs                        架构列表
+  ps                           运行中的训练进程快照
+  deps                         依赖探测
+  help                         本帮助
+  quit / q                     退出
 
 【环境】
-  NETGEN_DIR  模型目录（默认: <项目根>/generated_models）
-  NETGEN_PYTHON  Python 解释器
+  NETGEN_DIR   模型目录（默认: <项目根>/generated_models）
+  NETGEN_PYTHON Python 解释器
 """
 
 
-# ── 生成对话框 ──────────────────────────────────────────────────────────
+# ── 对话框 ────────────────────────────────────────────────────────────
 
 class GenerateScreen(ModalScreen):
-    """收集生成参数：--range --count --arch --dataset --device"""
+    """生成参数表单（常用项 + 高级项）。"""
 
     BINDINGS = [("escape", "dismiss(None)", "取消")]
 
@@ -88,6 +102,12 @@ class GenerateScreen(ModalScreen):
         yield Input(placeholder="syn / iris / mnist / cifar10", id="dlg-dataset")
         yield Label("设备优先级 (默认自动):")
         yield Input(placeholder="cuda,mps / cpu", id="dlg-device")
+        yield Label("预设 (可选: cv/nlp/gen/light/all):")
+        yield Input(placeholder="cv", id="dlg-preset")
+        yield Label("随机种子 (默认 42):")
+        yield Input(placeholder="42", id="dlg-seed")
+        yield Label("并行生成数 (默认 1):")
+        yield Input(placeholder="1", id="dlg-jobs")
         yield Horizontal(Button("生成", variant="primary", id="dlg-ok"),
                          Button("取消", id="dlg-cancel"), classes="dlg-btns")
 
@@ -108,18 +128,15 @@ class GenerateScreen(ModalScreen):
             self.notify("参数范围不能为空", severity="error")
             return
         args += ["--range", rng]
-        count = self.query_one("#dlg-count", Input).value.strip()
-        if count:
-            args += ["--count", count]
-        arch = self.query_one("#dlg-arch", Input).value.strip()
-        if arch:
-            args += ["--arch", arch]
-        ds = self.query_one("#dlg-dataset", Input).value.strip()
-        if ds:
-            args += ["--dataset", ds]
-        dev = self.query_one("#dlg-device", Input).value.strip()
-        if dev:
-            args += ["--device", dev]
+        for wid, flag in (("#dlg-count", "--count"), ("#dlg-arch", "--arch"),
+                          ("#dlg-dataset", "--dataset"),
+                          ("#dlg-device", "--device"),
+                          ("#dlg-preset", "--preset"),
+                          ("#dlg-seed", "--seed"),
+                          ("#dlg-jobs", "--jobs")):
+            val = self.query_one(wid, Input).value.strip()
+            if val:
+                args += [flag, val]
         self.dismiss(args)
 
 
@@ -142,7 +159,7 @@ class ConfirmScreen(ModalScreen):
         self.dismiss(event.button.id == "dlg-yes")
 
 
-# ── 主应用 ───────────────────────────────────────────────────────────────
+# ── 主应用 ─────────────────────────────────────────────────────────────
 
 class NetGenTui(App):
     TITLE = "NetGen 管理器"
@@ -189,16 +206,37 @@ class NetGenTui(App):
         Binding("b", "benchmark", "对比训练"),
         Binding("m", "monitor", "资源采样"),
         Binding("c", "clean", "清理"),
+        Binding("ctrl+e", "focus_cmd", "命令栏"),
+        Binding("escape", "focus_table", "表格"),
         Binding("q", "quit", "退出"),
     ]
+
+    # 表格排序键 → (排序函数)
+    SORT_KEYS = {
+        "index": lambda m: m.index,
+        "params": lambda m: m.params,
+        "loss": lambda m: (m.best_metric_value if m.best_metric_name
+                           in ("loss", "val_loss", "recon_loss", "g_loss")
+                           else float("inf")),
+        "acc": lambda m: -(m.best_metric_value if m.best_metric_name
+                           in ("accuracy", "val_acc") else float("-inf")),
+        "val_loss": lambda m: (m.best_metric_value if m.best_metric_name
+                               == "val_loss" else float("inf")),
+        "val_acc": lambda m: -(m.best_metric_value if m.best_metric_name
+                               == "val_acc" else float("-inf")),
+        "dataset": lambda m: m.dataset,
+        "status": lambda m: m.status,
+    }
 
     def __init__(self, models_dir: str = MODELS_DIR):
         super().__init__()
         self.models_dir = models_dir
         self.models: List[ModelInfo] = []
         self.busy = False  # 有子进程在跑
+        self.sort_key = "index"
         self._log_lines: List[str] = []
         self._detail_text = ""
+        self._selected = None  # 当前选中模型 id（刷新后保持）
 
     # ── 界面组装 ──
 
@@ -220,13 +258,23 @@ class NetGenTui(App):
         table.add_columns("ID", "架构", "参数", "数据集", "状态", "最佳指标",
                           "Tier")
         self.action_refresh()
+        table.focus()  # 默认焦点在表格 → 快捷键立即可用
+
+    # ── 焦点 ──
+
+    def action_focus_cmd(self) -> None:
         self.query_one("#cmd-input", Input).focus()
+
+    def action_focus_table(self) -> None:
+        self.query_one("#models-table", DataTable).focus()
 
     # ── 数据 ──
 
     def action_refresh(self) -> None:
-        """重新扫描模型目录并刷新表格。"""
+        """重新扫描并按当前排序键刷新表格，保持选中行。"""
         self.models = scan_models(self.models_dir)
+        key = self.SORT_KEYS.get(self.sort_key, self.SORT_KEYS["index"])
+        self.models.sort(key=key)
         table = self.query_one("#models-table", DataTable)
         table.clear()
         trained = sum(1 for m in self.models if m.status == "trained")
@@ -237,30 +285,83 @@ class NetGenTui(App):
             table.add_row(str(m.index), m.architecture, f"{m.params:,}",
                           m.dataset, m.status, metric, m.tier,
                           key=str(m.index))
+        # 保持选中：若之前有选中且仍存在，光标移回该行并刷新详情
+        sel = self._selected
+        if sel:
+            sel_row = None
+            for i, m in enumerate(self.models):
+                if str(m.index) == sel or m.folder_name == sel:
+                    sel_row = i
+                    break
+            if sel_row is None and len(sel) >= 3:
+                for i, m in enumerate(self.models):
+                    if sel in m.folder_name:
+                        sel_row = i
+                        break
+            if sel_row is not None:
+                try:
+                    table.move_cursor(row=sel_row)
+                except Exception:
+                    pass
+                self._show_detail(sel)
+                if sel_row is not None:
+                    pass
+            elif self.models:
+                try:
+                    table.move_cursor(row=0)
+                except Exception:
+                    pass
+                self._show_detail(str(self.models[0].index))
+        elif self.models:
+            try:
+                table.move_cursor(row=0)
+            except Exception:
+                pass
+            self._show_detail(str(self.models[0].index))
         total = len(self.models)
         self.query_one("#stat-bar", Static).update(
             f"  {self.models_dir}  |  {total} 个模型（{trained} 已训练）  |  "
-            f"{'忙（任务运行中…）' if self.busy else '空闲'}"
-        )
+            f"排序: {self.sort_key}  |  "
+            f"{'忙（任务运行中…）' if self.busy else '空闲'}")
 
     def _selected_id(self) -> Optional[str]:
         table = self.query_one("#models-table", DataTable)
-        row_key = table.cursor_row
+        try:
+            row_key = table.cursor_row
+        except Exception:
+            return None
         if row_key is None:
             return None
-        return table.get_row_at(row_key)[0]
+        try:
+            return table.get_row_at(row_key)[0]
+        except Exception:
+            return None
 
     def _find_model(self, ident: str) -> Optional[ModelInfo]:
+        if not ident:
+            return None
         for m in self.models:
-            if str(m.index) == ident or ident in m.folder_name:
+            if str(m.index) == ident:
                 return m
+        for m in self.models:
+            if m.folder_name == ident:
+                return m
+        if len(ident) >= 3:  # 模糊匹配仅限较长的关键词，避免 '1' 误命中
+            for m in self.models:
+                if ident in m.folder_name:
+                    return m
         return None
+
+    @on(DataTable.RowHighlighted)
+    def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_detail(str(event.row_key.value))
 
     @on(DataTable.RowSelected)
     def _row_selected(self, event: DataTable.RowSelected) -> None:
-        self._show_detail(event.row_key.value)
+        self._show_detail(str(event.row_key.value))
 
     def _show_detail(self, ident: str) -> None:
+        self._selected = ident  # 所有详情路径都同步选中状态
         m = self._find_model(ident)
         panel = self.query_one("#detail-panel", Static)
         if m is None:
@@ -279,7 +380,6 @@ class NetGenTui(App):
         lines.append(f"best_model.pth: {'✓' if m.has_best else '—'}")
         lines.append(f"checkpoints: {'✓' if m.has_checkpoints else '—'}")
         lines.append("")
-        # 训练日志尾部
         log_path = os.path.join(m.folder_path, "training_log.md")
         if os.path.exists(log_path):
             lines.append("[b]训练日志尾[/b]")
@@ -295,13 +395,15 @@ class NetGenTui(App):
     # ── 子进程执行（实时输出到日志区）────────────────────────────
 
     def _log(self, text: str) -> None:
-        self._log_lines = (self._log_lines + text.splitlines())[-300:]
+        self._log_lines = (self._log_lines + text.splitlines())[-400:]
         self.query_one("#log-panel", Static).update("\n".join(self._log_lines))
 
     @work(exclusive=True, group="run")
     async def _run(self, cmd: List[str], cwd: Optional[str] = None,
                    on_done=None) -> None:
         """异步跑子进程，stdout/stderr 实时显示在日志区。"""
+        if self.busy:
+            self._log(f"⏳ 有任务在运行，本任务已排队…")
         self.busy = True
         self.action_refresh()
         self._log(f"$ {' '.join(cmd)}")
@@ -326,18 +428,17 @@ class NetGenTui(App):
         if on_done:
             on_done(rc)
 
-    # ── 指令执行 ──
+    # ── 快捷键动作 ──
 
     def _train_id(self, ident: str, extra: List[str]) -> None:
         m = self._find_model(ident)
         if m is None:
             self._log(f"✗ 找不到模型: {ident}")
             return
-        epochs = ["--epochs", "1"]  # 默认 1 epoch，避免误跑大模型
         if "--epochs" not in extra:
-            extra = epochs + extra
-        cmd = [PYTHON, os.path.join(m.folder_path, "train.py")] + extra
-        self._run(cmd, cwd=m.folder_path)
+            extra = ["--epochs", "1"] + extra  # 安全默认：1 epoch
+        self._run([PYTHON, os.path.join(m.folder_path, "train.py")] + extra,
+                  cwd=m.folder_path)
 
     def action_train(self) -> None:
         ident = self._selected_id()
@@ -358,17 +459,18 @@ class NetGenTui(App):
         self._run([PYTHON, eval_py], cwd=m.folder_path)
 
     def action_sweep(self) -> None:
+        """真正的超参搜索（安全默认：1 epoch × lr=0.001,0.01）。"""
         ident = self._selected_id()
         if ident is None:
             return
         m = self._find_model(ident)
         if m is None:
             return
-        cmd = [PYTHON, os.path.join(m.folder_path, "train.py"), "--epochs", "1"]
-        self._log(f"提示: 完整超参搜索请用命令栏: sweep {ident} --lrs 0.001,0.01 "
-                  f"--batches 64,128")
-        self._log(f"（快捷键仅跑 1 个 lr=0.001 batch=64 的参考训练）")
-        self._run(cmd, cwd=m.folder_path)
+        self._log(f"超参搜索 {ident}：1 epoch × lr=[0.001,0.01] batch=64 "
+                  f"（命令栏可自定义: sweep {ident} --lrs ... --batches ...）")
+        self._run([PYTHON, RUNPY, "sweep", ident, "--dir", self.models_dir,
+                   "--epochs", "1", "--lrs", "0.001,0.01", "--batches", "64",
+                   "--device", "cpu"])
 
     def action_generate(self) -> None:
         self.push_screen(GenerateScreen(), self._on_generate_done)
@@ -376,13 +478,12 @@ class NetGenTui(App):
     def _on_generate_done(self, args: Optional[List[str]]) -> None:
         if not args:
             return
-        cmd = [PYTHON, RUNPY, "generate", "-o", self.models_dir] + args
-        self._run(cmd)
+        self._run([PYTHON, RUNPY, "generate", "-o", self.models_dir] + args)
 
     def action_benchmark(self) -> None:
         self.push_screen(
-            ConfirmScreen("对比训练：训练全部未训练模型？\n（可在命令栏用 "
-                          "benchmark --workers N / --time-budget 调整）"),
+            ConfirmScreen("对比训练：训练全部未训练模型？\n（命令栏可加参: "
+                          "benchmark --workers N --time-budget MIN）"),
             self._on_benchmark_done)
 
     def _on_benchmark_done(self, ok: bool) -> None:
@@ -394,12 +495,14 @@ class NetGenTui(App):
 
     def action_clean(self) -> None:
         self.push_screen(
-            ConfirmScreen("清理模型？\n（默认 dry-run 只预览，需 --force 才会删除）"),
+            ConfirmScreen("清理模型？\n（默认 dry-run 只预览；命令栏加 "
+                          "--force 才会删除）"),
             self._on_clean_done)
 
     def _on_clean_done(self, ok: bool) -> None:
         if ok:
-            self._run([PYTHON, RUNPY, "clean", "--dir", self.models_dir, "--force"])
+            self._run([PYTHON, RUNPY, "clean", "--dir", self.models_dir,
+                       "--force"])
 
     def action_detail(self) -> None:
         ident = self._selected_id()
@@ -443,60 +546,117 @@ class NetGenTui(App):
             ident = args[0] if args else self._selected_id()
             if ident:
                 self._show_detail(ident)
+        elif cmd == "sort":
+            key = args[0] if args else "params"
+            if key not in self.SORT_KEYS:
+                self._log(f"✗ 排序键无效: {key}（可选: "
+                          f"{', '.join(self.SORT_KEYS)}）")
+                return
+            self.sort_key = key
+            self.action_refresh()
+            self._log(f"已按 {key} 排序")
         elif cmd == "train":
             if not args:
-                self._log("用法: train <id> [--epochs N] [--lr X] [--device ...]")
+                self._log("用法: train <id> [--epochs N] [--lr X] "
+                          "[--batch-size N] [--device ...] [--seed N]")
                 return
             self._train_id(args[0], args[1:])
         elif cmd == "eval":
             ident = args[0] if args else self._selected_id()
-            if ident:
-                self._show_detail(ident)
-                self._log(f"评估 {ident}…（eval.py 输出见上）")
-                m = self._find_model(ident)
-                if m:
-                    self._run([PYTHON, os.path.join(m.folder_path, "eval.py")],
-                              cwd=m.folder_path)
+            m = self._find_model(ident) if ident else None
+            if m is None:
+                self._log(f"✗ 找不到模型: {ident or '(未选中)'}")
+                return
+            self._show_detail(ident)
+            self._run([PYTHON, os.path.join(m.folder_path, "eval.py")],
+                      cwd=m.folder_path)
         elif cmd == "sweep":
             ident = args[0] if args else self._selected_id()
-            if not ident:
-                self._log("用法: sweep <id> [--epochs N] [--lrs ...] [--batches ...]")
-                return
-            m = self._find_model(ident)
+            m = self._find_model(ident) if ident else None
             if m is None:
-                self._log(f"✗ 找不到模型: {ident}")
+                self._log(f"用法: sweep <id> [--epochs N] [--lrs ...] "
+                          f"[--batches ...] [--device ...]")
                 return
-            self._run([PYTHON, RUNPY, "sweep", ident, "--dir", self.models_dir,
-                       "--device", "cpu"] + args, cwd=None)
+            rest = [a for a in args[1:] if not a.startswith("--device")]
+            dev = [a for a in args[1:] if a.startswith("--device")]
+            self._run([PYTHON, RUNPY, "sweep", ident, "--dir",
+                       self.models_dir] + dev + rest)
         elif cmd == "generate":
             if "--range" not in args:
                 self._log("用法: generate --range 5K-50K --count 5 "
-                          "[--arch ...] [--dataset ...] [--device ...]")
+                          "[--arch ...] [--preset ...] [--dataset ...] "
+                          "[--device ...] [--seed N] [--jobs N]")
                 return
-            self._run([PYTHON, RUNPY, "generate", "-o", self.models_dir] + args)
+            self._run([PYTHON, RUNPY, "generate", "-o", self.models_dir]
+                      + args)
         elif cmd in ("benchmark", "bm"):
             self._run([PYTHON, RUNPY, "benchmark", "--dir", self.models_dir]
                       + args)
-        elif cmd in ("monitor", "top"):
-            self._run([PYTHON, RUNPY, "monitor", "--once", "--interval", "1"]
-                      + args)
-        elif cmd in ("clean",):
-            flags = [a for a in args if a.startswith("-")]
-            rest = [a for a in args if not a.startswith("-")]
-            if "--force" not in flags and "-f" not in flags:
-                self._log("默认 dry-run（只预览）。加 --force 才会删除。")
-            self._run([PYTHON, RUNPY, "clean", "--dir", self.models_dir] + args)
-        elif cmd == "export":
-            self._run([PYTHON, RUNPY, "export", "--dir", self.models_dir]
+        elif cmd == "train-all":
+            self._run([PYTHON, RUNPY, "benchmark", "--dir", self.models_dir]
                       + args)
         elif cmd in ("compare", "cmp"):
             self._run([PYTHON, RUNPY, "compare", "--dir", self.models_dir]
                       + args)
+        elif cmd in ("monitor", "top"):
+            self._run([PYTHON, RUNPY, "monitor", "--once", "--interval", "1"]
+                      + args)
+        elif cmd == "clean":
+            if "--force" not in args and "-f" not in args:
+                self._log("默认 dry-run（只预览）。加 --force 才会删除。")
+            self._run([PYTHON, RUNPY, "clean", "--dir", self.models_dir]
+                      + args)
+        elif cmd == "export":
+            self._run([PYTHON, RUNPY, "export", "--dir", self.models_dir]
+                      + args)
+        elif cmd == "ps":
+            self._cmd_ps()
         elif cmd == "deps":
-            self._run([PYTHON, RUNPY, "archs", "--list"])
-            self._log("deps: 用 Python CLI 检查: python -c \"import torch, psutil\"")
+            self._cmd_deps()
         else:
             self._log(f"未知指令: {cmd}（help 查看全部指令）")
+
+    # ── 原生指令：ps / deps ──
+
+    def _cmd_ps(self) -> None:
+        """列出现在正在跑的训练/评估进程（不杀进程）。"""
+        try:
+            import psutil
+        except ImportError:
+            self._log("✗ 需要 psutil（pip install psutil）")
+            return
+        found = False
+        for p in psutil.process_iter(["pid", "cmdline", "cpu_percent",
+                                      "memory_percent"]):
+            try:
+                cmd = " ".join(p.info["cmdline"] or [])
+            except Exception:
+                continue
+            if any(t in cmd for t in ("train.py", "eval.py", "sweep.py",
+                                      "benchmark", "run.py")):
+                found = True
+                self._log(f"  pid {p.info['pid']:>6d}  cpu {p.info['cpu_percent']:5.1f}%"
+                          f"  mem {p.info['memory_percent']:4.1f}%  {cmd[-60:]}")
+        if not found:
+            self._log("  无运行中的训练进程")
+        self._log("提示: 结束进程需手动 kill <pid>（管理器不杀进程）")
+
+    def _cmd_deps(self) -> None:
+        """探测关键依赖版本。"""
+        import importlib
+        for mod, hint in (("torch", ""), ("psutil", "（monitor 需要）"),
+                          ("textual", "（TUI 需要）"),
+                          ("sklearn", "（数据集，可选）"),
+                          ("torchvision", "（mnist/cifar10，可选）")):
+            try:
+                m = importlib.import_module(mod)
+                ver = getattr(m, "__version__", "?")
+                self._log(f"  {mod:<12s} {ver}  {hint}")
+            except ImportError:
+                self._log(f"  {mod:<12s} ✗ 未安装 {hint}")
+        nv = os.path.exists("/usr/bin/nvidia-smi") or \
+            os.path.exists("/usr/local/bin/nvidia-smi")
+        self._log(f"  nvidia-smi   {'✓' if nv else '未检测到'}")
 
 
 # ── 入口 ─────────────────────────────────────────────────────────────────
@@ -505,8 +665,6 @@ def main() -> None:
     import argparse
     ap = argparse.ArgumentParser(description="NetGen TUI 管理器")
     ap.add_argument("--dir", default=MODELS_DIR, help="模型目录")
-    ap.add_argument("--dir-env", default=None,
-                    help=argparse.SUPPRESS)
     args = ap.parse_args()
     NetGenTui(models_dir=args.dir).run()
 

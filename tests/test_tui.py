@@ -26,9 +26,11 @@ def test_tui_table_and_detail():
             assert table.row_count == 2
             await pilot.press('down')
             await pilot.pause()
+            # 光标移动即同步详情（RowHighlighted）
+            assert '002' in app._detail_text and 'mlp' in app._detail_text
             app.action_detail()
             await pilot.pause()
-            assert '001' in app._detail_text and 'mlp' in app._detail_text
+            assert '002' in app._detail_text
 
     asyncio.run(_inner())
 
@@ -99,5 +101,102 @@ def test_tui_train_subprocess_small_model():
             # model should now be marked trained after auto-refresh
             table = app.query_one('#models-table')
             assert 'trained' in table.get_row_at(0)[4]
+
+    asyncio.run(_inner())
+
+
+def test_tui_focus_rules():
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 40)) as pilot:
+            # 启动焦点在表格（快捷键立即可用）
+            assert app.focused is app.query_one('#models-table')
+            # ctrl+e 聚焦命令栏
+            await pilot.press('ctrl+e')
+            await pilot.pause()
+            assert app.focused is app.query_one('#cmd-input')
+            # escape 回表格
+            await pilot.press('escape')
+            await pilot.pause()
+            assert app.focused is app.query_one('#models-table')
+
+    asyncio.run(_inner())
+
+
+def test_tui_sort_command():
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click('#cmd-input')
+            await pilot.pause()
+            for ch in 'sort params':
+                await pilot.press(ch)
+            await pilot.press('enter')
+            await pilot.pause()
+            assert app.sort_key == 'params'
+            assert '已按 params 排序' in '\n'.join(app._log_lines)
+            # 无效排序键
+            for _ in range(12):
+                await pilot.press('backspace')
+            await pilot.pause()
+            for ch in 'sort banana':
+                await pilot.press(ch)
+            await pilot.press('enter')
+            await pilot.pause()
+            assert '排序键无效' in '\n'.join(app._log_lines)
+
+    asyncio.run(_inner())
+
+
+def test_tui_refresh_keeps_selection():
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press('down')
+            await pilot.pause()
+            app.action_detail()
+            await pilot.pause()
+            assert app._selected == '2'
+            app.action_refresh()  # 刷新后选中/详情保持
+            await pilot.pause()
+            assert app._selected == '2'
+            assert '002' in app._detail_text
+
+    asyncio.run(_inner())
+
+
+def test_tui_ps_and_deps_commands():
+    d = tempfile.mkdtemp(prefix='ngtui_')
+    _make_models(d)
+    app = NetGenTui(models_dir=d)
+
+    async def _inner():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.click('#cmd-input')
+            await pilot.pause()
+            for ch in 'ps':
+                await pilot.press(ch)
+            await pilot.press('enter')
+            await pilot.pause()
+            log = '\n'.join(app._log_lines)
+            assert '无运行中的训练进程' in log or 'pid' in log
+            for _ in range(4):
+                await pilot.press('backspace')
+            await pilot.pause()
+            for ch in 'deps':
+                await pilot.press(ch)
+            await pilot.press('enter')
+            await pilot.pause()
+            log = '\n'.join(app._log_lines)
+            assert 'torch' in log and 'textual' in log
 
     asyncio.run(_inner())
